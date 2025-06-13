@@ -79,8 +79,8 @@ Seja objetivo, profissional e destaque os pontos mais importantes."""
         logger.error(f"Erro ao carregar prompt: {str(e)}")
         return "Você é um analista financeiro. Analise os documentos fornecidos e forneça um relatório detalhado."
 
-async def analyze_with_openai(combined_text: str) -> str:
-    """Envia o texto extraído para análise da OpenAI"""
+async def analyze_with_openai(combined_text: str) -> tuple:
+    """Envia o texto extraído para análise da OpenAI e retorna a análise e o uso de tokens"""
     if not client:
         raise HTTPException(
             status_code=500, 
@@ -116,9 +116,16 @@ Forneça uma análise completa seguindo a estrutura solicitada."""
         )
         
         analysis = response.choices[0].message.content
-        logger.info(f"Análise concluída. Tamanho da resposta: {len(analysis)} caracteres")
+        token_usage = {
+            "prompt_tokens": response.usage.prompt_tokens,
+            "completion_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens
+        }
         
-        return analysis
+        logger.info(f"Análise concluída. Tamanho da resposta: {len(analysis)} caracteres")
+        logger.info(f"Tokens utilizados: {token_usage}")
+        
+        return analysis, token_usage
         
     except Exception as e:
         logger.error(f"Erro ao chamar OpenAI: {str(e)}")
@@ -231,14 +238,15 @@ async def analyze(
     
     # Segunda etapa: Enviar para OpenAI para análise
     try:
-        analysis = await analyze_with_openai(combined_text)
+        analysis, token_usage = await analyze_with_openai(combined_text)
         
         return {
             "success": True,
             "analysis": analysis,
             "processed_files": processed_files,
             "total_text_length": len(combined_text),
-            "files_processed": len([f for f in processed_files if f['status'] == 'processado'])
+            "files_processed": len([f for f in processed_files if f['status'] == 'processado']),
+            "token_usage": token_usage
         }
         
     except HTTPException:
