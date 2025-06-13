@@ -1,10 +1,11 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List
+from typing import List, Optional
 from openai import OpenAI
 from .utils import extract_text_from_document
 import os
 import logging
+import json
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -124,7 +125,10 @@ Forneça uma análise completa seguindo a estrutura solicitada."""
         raise HTTPException(status_code=500, detail=f"Erro ao processar análise: {str(e)}")
 
 @app.post("/analyze/")
-async def analyze(files: List[UploadFile] = File(...)):
+async def analyze(
+    files: List[UploadFile] = File(...),
+    planning_data: Optional[str] = Form(None)
+):
     logger.info(f"Recebido {len(files)} arquivos para análise")
     
     if not files:
@@ -132,6 +136,41 @@ async def analyze(files: List[UploadFile] = File(...)):
 
     combined_text = ""
     processed_files = []
+    
+    # Processar dados de planejamento, se fornecidos
+    if planning_data:
+        try:
+            planning_json = json.loads(planning_data)
+            logger.info(f"Dados de planejamento recebidos: {planning_json}")
+            
+            combined_text += "=== DADOS DE PLANEJAMENTO ===\n"
+            
+            # Adicionar segmento
+            if planning_json.get("segment"):
+                segment = planning_json["segment"]
+                if segment == "Outro" and planning_json.get("otherSegment"):
+                    segment = planning_json["otherSegment"]
+                combined_text += f"Segmento da Empresa: {segment}\n"
+            
+            # Adicionar objetivo
+            if planning_json.get("objective"):
+                objective = planning_json["objective"]
+                if objective == "Outro" and planning_json.get("otherObjective"):
+                    objective = planning_json["otherObjective"]
+                combined_text += f"Objetivo do Crédito: {objective}\n"
+            
+            # Adicionar valor do crédito
+            if planning_json.get("creditAmount"):
+                combined_text += f"Valor do Crédito Buscado: R$ {planning_json['creditAmount']}\n"
+            
+            # Adicionar tempo na empresa
+            if planning_json.get("timeInCompany"):
+                combined_text += f"Tempo na Empresa: {planning_json['timeInCompany']} anos\n"
+                
+            combined_text += "\n\n"
+        except json.JSONDecodeError as e:
+            logger.error(f"Erro ao decodificar dados de planejamento: {str(e)}")
+            # Continuar mesmo com erro nos dados de planejamento
     
     # Primeira etapa: Extrair texto de todos os arquivos
     for i, file in enumerate(files):
