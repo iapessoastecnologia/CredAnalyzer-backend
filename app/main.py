@@ -1,13 +1,23 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from openai import OpenAI
 from .utils import extract_text_from_document
 import os
 import logging
 import json
+import io
 from pathlib import Path
 from dotenv import load_dotenv
+from pydantic import BaseModel
+
+# Importar módulos Firebase
+try:
+    from app.firebase_service import initialize_firebase, save_report
+    firebase_available = True
+except ImportError:
+    firebase_available = False
+    logging.warning("Módulo firebase_service não encontrado. Funcionalidades de Firebase não estarão disponíveis.")
 
 # Carregar variáveis de ambiente do .env
 load_dotenv()
@@ -272,3 +282,132 @@ async def health_check():
         "current_working_directory": os.getcwd(),
         "message": "API funcionando corretamente"
     }
+
+# Nova classe para o modelo de dados de relatório
+class ReportData(BaseModel):
+    user_id: str
+    user_name: str
+    planning_data: dict
+    report_content: str
+    
+@app.post("/save_report/")
+async def save_report_endpoint(
+    report_data: str = Form(...),
+    files: Optional[List[UploadFile]] = File(None)
+):
+    """
+    Endpoint para salvar relatório no Firebase.
+    
+    Recebe dados do relatório e arquivos para salvar no Firestore (sem Storage).
+    """
+    if not firebase_available:
+        raise HTTPException(
+            status_code=501, 
+            detail="Funcionalidade de Firebase não está disponível no backend."
+        )
+    
+    try:
+        # Converter os dados do relatório de string JSON para dicionário
+        try:
+            report_data_dict = json.loads(report_data)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Dados do relatório inválidos. JSON esperado.")
+            
+        user_id = report_data_dict.get("user_id")
+        user_name = report_data_dict.get("user_name")
+        planning_data = report_data_dict.get("planning_data", {})
+        report_content = report_data_dict.get("report_content", "")
+        
+        logger.info(f"Recebendo solicitação para salvar relatório para o usuário {user_id}")
+        
+        if not user_id or not user_name:
+            raise HTTPException(status_code=400, detail="ID do usuário e nome são obrigatórios.")
+        
+        # Preparar documentos para upload (apenas metadados)
+        analysis_files = {}
+        if files:
+            for file in files:
+                # Tenta determinar o tipo do documento pelo nome
+                file_name = file.filename.lower()
+                doc_type = None
+                
+                if 'imposto' in file_name or 'ir' in file_name:
+                    doc_type = 'incomeTax'
+                elif 'registro' in file_name:
+                    doc_type = 'registration'
+                elif 'fiscal' in file_name or 'situacao' in file_name:
+                    doc_type = 'taxStatus'
+                elif 'faturamento' in file_name and 'fiscal' in file_name:
+                    doc_type = 'taxBilling'
+                elif 'faturamento' in file_name and 'gerencial' in file_name:
+                    doc_type = 'managementBilling'
+                else:
+                    # Para arquivos não identificados, usar o nome original
+                    doc_type = f"document_{len(analysis_files)}"
+                
+                # Apenas registrar metadados do arquivo
+                file_info = {
+                    "filename": file.filename,
+                    "content_type": file.content_type,
+                    "size": 0  # Não podemos obter o tamanho sem ler o arquivo
+                }
+                analysis_files[doc_type] = file_info
+        
+        # Salvar relatório no Firebase
+        result = save_report(
+            user_id=user_id,
+            user_name=user_name,
+            planning_data=planning_data,
+            analysis_files=analysis_files,
+            report_content=report_content
+        )
+        
+        if not result["success"]:
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Erro ao salvar relatório: {result.get('error', 'Erro desconhecido')}"
+            )
+        
+        return {
+            "success": True,
+            "report_id": result.get("report_id", ""),
+            "message": "Relatório salvo com sucesso no Firebase"
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao salvar relatório: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao salvar relatório: {str(e)}"
+        )
+
+@app.get("/firebase_status/")
+async def firebase_status():
+    """Verifica se a integração com Firebase está disponível e configurada"""
+    if not firebase_available:
+        return {"available": False, "reason": "Módulo firebase_service não encontrado"}
+    
+    try:
+        is_initialized = initialize_firebase()
+        
+        return {
+            "available": True,
+            "initialized": is_initialized,
+            "message": "Firebase configurado e pronto para uso" if is_initialized else "Firebase não inicializado corretamente"
+        }
+    except Exception as e:
+        return {
+            "available": False,
+            "reason": f"Erro ao verificar status do Firebase: {str(e)}"
+        }
+
+# Inicializar Firebase ao iniciar a aplicação, se disponível
+if firebase_available:
+    try:
+        is_initialized = initialize_firebase()
+        if is_initialized:
+            logger.info("Firebase inicializado durante a inicialização da aplicação")
+        else:
+            logger.warning("Falha ao inicializar Firebase durante inicialização da aplicação")
+    except Exception as e:
+        logger.error(f"Erro ao inicializar Firebase durante a inicialização da aplicação: {str(e)}")

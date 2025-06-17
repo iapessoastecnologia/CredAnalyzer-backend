@@ -72,3 +72,275 @@ Analise todos os documentos fornecidos e os dados de planejamento, produzindo um
 Considerando que o cliente está em um processo de busca de crédito junto ao banco, avalie se o perfil da empresa, seu histórico financeiro e fiscal são compatíveis com o valor e objetivo do crédito solicitado.
 Levante possíveis pontos fortes e fracos baseado nos dados analisados para melhorar a assertividade na obtenção do crédito.
 Considere especialmente o tempo de empresa, o valor do crédito alvo, segmento da empresa e objetivo do crédito informados nos dados de planejamento.
+
+## MODELO PADRÃO DE EXEMPLO:
+
+
+1. Dados Cadastrais do Cliente
+
+
+
+Empresa: [Nome da empresa]
+
+
+
+
+CNPJ: [xx.xxx.xxx/0001-xx]
+
+
+
+
+Segmento: [Comércio, Indústria, Serviços, etc.]
+
+
+
+
+Faturamento Mensal: R$ [XX.XXX,XX]
+
+
+
+
+Faturamento Anual Estimado: R$ [XXX.XXX,XX]
+
+
+
+
+Número de Funcionários: [opcional]
+
+
+
+
+Forma de movimentação bancária predominante: [Maquineta / Transferências / PIX / Outro]
+
+
+
+
+
+2. Dados da Solicitação de Crédito
+
+
+
+Valor Solicitado: R$ [XXX.XXX,XX]
+
+
+
+
+Parcela Ideal Desejada: R$ [X.XXX,XX]
+
+
+
+
+Prazo Estimado: [XX] meses
+
+
+
+
+Carência Solicitada: [Sim / Não] – [Quantidade de meses]
+
+
+
+
+Finalidade do Crédito: [Construção, Compra de Equipamentos, Capital de Giro, etc.]
+
+
+
+
+Garantias Apresentadas: [Ex: Imóvel, Veículo, Avalista, Sem garantia formal]
+
+
+
+
+
+3. Situação Financeira da Empresa
+
+
+
+Dívidas registradas (SCR/BACEN): R$ [valor total]
+
+
+
+
+Limites de crédito disponíveis: R$ [valor total]
+
+
+
+
+Situação no SPC/Serasa: [Regular / Irregular / Em negociação]
+
+
+
+
+Certidões negativas (Federal / Estadual / Municipal): [Ok / Pendente / Não disponível]
+
+
+
+
+Impostos em dia: [Sim / Não / Parcial]
+
+
+
+
+
+4. Situação Patrimonial e Financeira dos Sócios
+
+
+
+Nome do Sócio Principal: [Nome completo]
+
+
+
+
+Rendimento Anual Declarado (IRPF): R$ [valor]
+
+
+
+
+Patrimônio Declarado: R$ [valor total]
+
+
+
+
+Dívidas registradas (SCR/Serasa): R$ [valor total]
+
+
+
+
+Coobrigações identificadas: [Sim / Não – valor estimado]
+
+
+
+
+Capacidade de atuação como avalista: [Boa / Moderada / Ruim]
+
+
+
+
+
+5. Análise Técnica da Operação
+
+5.1 Capacidade de Pagamento
+
+
+
+Parcela simulada realista: R$ [valor com base em prazo e juros médios]
+
+
+
+
+% de comprometimento do faturamento: [XX]%
+
+
+
+
+Recomendado manter abaixo de: 20% a 30%
+
+
+
+
+5.2 Probabilidade de Aprovação
+
+
+Classificação do Cliente:
+
+🔵 A+ (Muito Alta)
+
+🟢 A (Alta)
+
+🟡 B (Moderada)
+
+🟠 C (Baixa)
+
+🔴 D (Muito Baixa)
+
+
+
+
+Probabilidade estimada de aprovação: [XX]%
+
+
+
+
+6. Pontos Positivos Identificados
+
+
+
+[✔] Boa movimentação bancária mensal
+
+
+
+
+[✔] Rendimento pessoal e/ou empresarial compatível com a parcela
+
+
+
+
+[✔] Garantias sólidas apresentadas
+
+
+
+
+[✔] Situação regular nos órgãos de restrição
+
+
+
+
+[✔] Certidões atualizadas e sem pendências
+
+
+
+
+
+7. Riscos ou Pontos de Atenção
+
+
+
+[⚠] Endividamento superior a 30% do faturamento
+
+
+
+
+[⚠] Patrimônio incompatível com o valor solicitado
+
+
+
+
+[⚠] Garantias frágeis ou inexistentes
+
+
+
+
+[⚠] Inconsistência entre declaração e realidade financeira
+
+
+
+
+[⚠] Histórico de atrasos no SCR / Bacen
+
+
+
+
+
+8. Linhas de Crédito Recomendadas
+
+Linha de Crédito	Justificativa	Juros Médios ao Mês	Prazo Comum
+PRONAMPE	Para capital de giro com garantia do FGO	1,2% a 1,8%	24 a 48 meses
+Giro Parcelado	Curto prazo para equilíbrio de caixa	1,5% a 3,0%	Até 24 meses
+Investimento Fixo	Para construção, reformas ou máquinas	1,2% a 2,5%	Até 60 meses
+Finame / BNDES	Para aquisição de bens de capital	0,9% a 1,6%	Até 72 meses
+
+
+9. Bancos Recomendados para Relacionamento
+
+Banco	Motivo da Recomendação
+Banco do Brasil	PRONAMPE e BNDES com taxas atrativas
+Caixa Econômica	Investimento em Construção e Imóveis
+Santander	Abertura para operações PJ com Avalista
+Bradesco	Flexível para empresas em expansão
+Sicredi	Relacionamento regional forte e consultivo
+
+
+10. Conclusão e Recomendação Final
+
+Com base nas análises apresentadas, a empresa [nome da empresa] possui uma probabilidade [alta/moderada/baixa] de aprovação de crédito para o valor solicitado.
+
+Recomendamos [ações de melhoria, sugestão de garantias, adequações] antes de protocolar o pedido bancário.
