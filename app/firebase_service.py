@@ -4,6 +4,7 @@ import os
 from dotenv import load_dotenv
 import time
 import logging
+import datetime
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -107,6 +108,47 @@ class FirestoreSimulator:
                     simulator.next_id += 1
                     
                 return DocumentRef(doc_id, simulator.data[collection_name])
+                
+            def where(self, field, op, value):
+                # Simulação simplificada de consulta
+                class QueryRef:
+                    def get(self):
+                        # Retorna documentos que correspondem ao filtro
+                        class QuerySnapshot:
+                            def __init__(self, docs):
+                                self.docs = docs
+                                
+                        filtered_docs = []
+                        for doc_id, doc_data in simulator.data[collection_name].items():
+                            # Verifica se o campo existe
+                            if field in doc_data:
+                                # Simula operações básicas de comparação
+                                if op == "==" and doc_data[field] == value:
+                                    filtered_docs.append(self._create_doc_snapshot(doc_id, doc_data))
+                                elif op == ">" and doc_data[field] > value:
+                                    filtered_docs.append(self._create_doc_snapshot(doc_id, doc_data))
+                                elif op == ">=" and doc_data[field] >= value:
+                                    filtered_docs.append(self._create_doc_snapshot(doc_id, doc_data))
+                                elif op == "<" and doc_data[field] < value:
+                                    filtered_docs.append(self._create_doc_snapshot(doc_id, doc_data))
+                                elif op == "<=" and doc_data[field] <= value:
+                                    filtered_docs.append(self._create_doc_snapshot(doc_id, doc_data))
+                                    
+                        return QuerySnapshot(filtered_docs)
+                        
+                    def _create_doc_snapshot(self, doc_id, doc_data):
+                        # Cria um snapshot de documento
+                        class DocumentSnapshot:
+                            def __init__(self, id, data):
+                                self.id = id
+                                self._data = data
+                                
+                            def to_dict(self):
+                                return self._data
+                                
+                        return DocumentSnapshot(doc_id, doc_data)
+                        
+                return QueryRef()
                 
         return CollectionRef()
 
@@ -227,3 +269,72 @@ def save_report(user_id, user_name, planning_data, analysis_files=None, report_c
         logger.error(f"Erro ao salvar relatório: {str(e)}")
         traceback.print_exc()
         return {"success": False, "error": str(e)}
+
+def get_reports_by_date_range(user_id=None, start_date=None, end_date=None):
+    """
+    Busca relatórios no Firestore dentro de um intervalo de datas.
+    
+    Args:
+        user_id (str, optional): ID do usuário para filtrar apenas seus relatórios
+        start_date (datetime.date, optional): Data inicial do intervalo
+        end_date (datetime.date, optional): Data final do intervalo
+    
+    Returns:
+        dict: Relatórios encontrados ou mensagem de erro
+    """
+    try:
+        # Inicializar Firebase se necessário
+        if not firebase_admin._apps:
+            if not initialize_firebase():
+                return {"success": False, "error": "Firebase não inicializado", "reports": []}
+        
+        # Obter instância do Firestore
+        db = get_firestore_db()
+        if db is None:
+            logger.error("Não foi possível obter instância do Firestore")
+            return {"success": False, "error": "Falha ao acessar Firestore", "reports": []}
+        
+        # Definir datas padrão (hoje) se não forem especificadas
+        if not start_date:
+            start_date = datetime.datetime.now().date()
+        if not end_date:
+            end_date = datetime.datetime.now().date()
+            
+        # Converter para datetime com hora inicial e final do dia
+        start_datetime = datetime.datetime.combine(start_date, datetime.time.min)
+        end_datetime = datetime.datetime.combine(end_date, datetime.time.max)
+        
+        # Consulta base na coleção de relatórios
+        query_ref = db.collection("relatorios")
+        
+        # Filtrar por usuário se especificado
+        if user_id:
+            query_ref = query_ref.where("usuarioId", "==", user_id)
+        
+        # Filtrar por intervalo de datas
+        query_ref = query_ref.where("timestamp", ">=", start_datetime)
+        query_ref = query_ref.where("timestamp", "<=", end_datetime)
+        
+        # Executar a consulta
+        reports = []
+        for doc in query_ref.get().docs:
+            report_data = doc.to_dict()
+            report_data["id"] = doc.id  # Adicionar o ID do documento
+            reports.append(report_data)
+            
+        logger.info(f"Encontrados {len(reports)} relatórios no intervalo de {start_date} a {end_date}")
+        
+        if not reports:
+            return {
+                "success": True, 
+                "message": "Nenhum relatório encontrado para o período especificado", 
+                "reports": []
+            }
+            
+        return {"success": True, "reports": reports}
+        
+    except Exception as e:
+        import traceback
+        logger.error(f"Erro ao buscar relatórios: {str(e)}")
+        traceback.print_exc()
+        return {"success": False, "error": str(e), "reports": []}

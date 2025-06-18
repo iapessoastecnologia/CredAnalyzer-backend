@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Request, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict, Any
 from openai import OpenAI
@@ -10,10 +10,11 @@ import io
 from pathlib import Path
 from dotenv import load_dotenv
 from pydantic import BaseModel
+import datetime
 
 # Importar módulos Firebase
 try:
-    from app.firebase_service import initialize_firebase, save_report
+    from app.firebase_service import initialize_firebase, save_report, get_reports_by_date_range
     firebase_available = True
 except ImportError:
     firebase_available = False
@@ -411,3 +412,48 @@ if firebase_available:
             logger.warning("Falha ao inicializar Firebase durante inicialização da aplicação")
     except Exception as e:
         logger.error(f"Erro ao inicializar Firebase durante a inicialização da aplicação: {str(e)}")
+
+class DateRange(BaseModel):
+    start_date: Optional[datetime.date] = None
+    end_date: Optional[datetime.date] = None
+    user_id: Optional[str] = None
+
+@app.get("/reports/")
+async def get_reports(
+    start_date: Optional[str] = Query(None, description="Data inicial no formato YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="Data final no formato YYYY-MM-DD"),
+    user_id: Optional[str] = Query(None, description="ID do usuário (opcional)")
+):
+    """
+    Retorna os relatórios disponíveis no intervalo de datas especificado.
+    Se nenhuma data for especificada, retorna os relatórios do dia atual.
+    """
+    if not firebase_available:
+        raise HTTPException(status_code=501, detail="Funcionalidade do Firebase não disponível")
+    
+    # Inicializar Firebase se necessário
+    if not firebase_admin._apps:
+        if not initialize_firebase():
+            raise HTTPException(status_code=500, detail="Falha ao inicializar Firebase")
+    
+    # Converter strings de data para objetos date
+    start_date_obj = None
+    end_date_obj = None
+    
+    try:
+        if start_date:
+            start_date_obj = datetime.date.fromisoformat(start_date)
+        if end_date:
+            end_date_obj = datetime.date.fromisoformat(end_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Formato de data inválido. Use YYYY-MM-DD")
+    
+    # Buscar relatórios
+    result = get_reports_by_date_range(user_id, start_date_obj, end_date_obj)
+    
+    if not result["success"]:
+        # Se houve erro, retorna o erro como HTTP 500
+        raise HTTPException(status_code=500, detail=result.get("error", "Erro desconhecido ao buscar relatórios"))
+    
+    # Retornar os dados
+    return result
