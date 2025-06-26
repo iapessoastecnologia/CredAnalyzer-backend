@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Request, Query, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Request, Query, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict, Any
 from openai import OpenAI
@@ -19,6 +19,18 @@ try:
 except ImportError:
     firebase_available = False
     logging.warning("Módulo firebase_service não encontrado. Funcionalidades de Firebase não estarão disponíveis.")
+
+# Importar módulos Stripe
+try:
+    from app.stripe_service import (
+        init_stripe, criar_cliente, criar_sessao_checkout, criar_assinatura,
+        processar_webhook, listar_cartoes, adicionar_cartao, remover_cartao,
+        atualizar_cartao_padrao, consumir_relatorio, obter_historico_pagamentos
+    )
+    stripe_available = True
+except ImportError:
+    stripe_available = False
+    logging.warning("Módulo stripe_service não encontrado. Funcionalidades de Stripe não estarão disponíveis.")
 
 # Carregar variáveis de ambiente do .env
 load_dotenv()
@@ -145,13 +157,24 @@ Forneça uma análise completa seguindo a estrutura solicitada."""
 @app.post("/analyze/")
 async def analyze(
     files: List[UploadFile] = File(...),
-    planning_data: Optional[str] = Form(None)
+    planning_data: Optional[str] = Form(None),
+    user_id: Optional[str] = Form(None)
 ):
     logger.info(f"Recebido {len(files)} arquivos para análise")
     
     if not files:
         raise HTTPException(status_code=400, detail="Nenhum arquivo enviado.")
 
+    # Verificar se o usuário tem relatórios disponíveis
+    if user_id and stripe_available:
+        resultado = consumir_relatorio(user_id)
+        if not resultado.get("success"):
+            raise HTTPException(
+                status_code=402, 
+                detail="Não há relatórios disponíveis. Adquira um plano para continuar."
+            )
+        logger.info(f"Usuário {user_id} tem {resultado.get('reports_left')} relatórios restantes")
+    
     combined_text = ""
     processed_files = []
     
@@ -296,74 +319,85 @@ async def save_report_endpoint(
     report_data: str = Form(...),
     files: Optional[List[UploadFile]] = File(None)
 ):
-    """
-    Endpoint para salvar relatório no Firebase.
-    
-    Recebe dados do relatório e arquivos para salvar no Firestore (sem Storage).
-    """
     if not firebase_available:
-        raise HTTPException(
-            status_code=501, 
-            detail="Funcionalidade de Firebase não está disponível no backend."
-        )
+        raise HTTPException(status_code=501, detail="Firebase não está disponível")
     
     try:
-        # Converter os dados do relatório de string JSON para dicionário
-        try:
-            report_data_dict = json.loads(report_data)
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Dados do relatório inválidos. JSON esperado.")
+        # Inicializar Firebase se necessário
+        if not firebase_admin._apps:
+            success = initialize_firebase()
+            if not success:
+                raise HTTPException(status_code=500, detail="Não foi possível inicializar o Firebase")
+        
+        # Converter string JSON para dicionário
+        data = json.loads(report_data)
+        
+        # Extrair campos obrigatórios
+        user_id = data.get("user_id")
+        user_name = data.get("user_name")
+        planning_data = data.get("planning_data", {})
+        report_content = data.get("report_content")
+        
+        if not user_id or not user_name or not report_content:
+            raise HTTPException(status_code=400, detail="Dados insuficientes para salvar o relatório")
+        
+        # Checar se o plano foi registrado
+        if stripe_available:
+            db = get_firestore_db()
+            user_doc = db.collection('usuarios').document(user_id).get()
             
-        user_id = report_data_dict.get("user_id")
-        user_name = report_data_dict.get("user_name")
-        planning_data = report_data_dict.get("planning_data", {})
-        report_content = report_data_dict.get("report_content", "")
+            if user_doc.exists:
+                user_data = user_doc.to_dict()
+                subscription = user_data.get('subscription', {})
+                
+                if subscription:
+                    # Incluir informações do plano nos metadados do relatório
+                    planning_data["planoAssinatura"] = {
+                        "nome": subscription.get('planName', 'Desconhecido'),
+                        "relatoriosRestantes": subscription.get('reportsLeft', 0),
+                        "renovacaoAutomatica": subscription.get('autoRenew', False)
+                    }
+            else:
+                logger.warning(f"Usuário {user_id} não tem plano registrado")
         
-        logger.info(f"Recebendo solicitação para salvar relatório para o usuário {user_id}")
-        
-        if not user_id or not user_name:
-            raise HTTPException(status_code=400, detail="ID do usuário e nome são obrigatórios.")
-        
-        # Preparar documentos para upload (apenas metadados)
+        # Processar arquivos, se houver
         analysis_files = {}
+        
         if files:
             for file in files:
-                # Tenta determinar o tipo do documento pelo nome
-                file_name = file.filename.lower()
-                doc_type = None
-                
-                if 'imposto' in file_name or 'ir' in file_name:
-                    doc_type = 'incomeTax'
-                elif 'registro' in file_name:
-                    doc_type = 'registration'
-                elif 'fiscal' in file_name or 'situacao' in file_name:
-                    doc_type = 'taxStatus'
-                elif 'faturamento' in file_name and 'fiscal' in file_name:
-                    doc_type = 'taxBilling'
-                elif 'faturamento' in file_name and 'gerencial' in file_name:
-                    doc_type = 'managementBilling'
-                else:
-                    # Para arquivos não identificados, usar o nome original
-                    doc_type = f"document_{len(analysis_files)}"
-                
-                # Apenas registrar metadados do arquivo
-                file_info = {
-                    "filename": file.filename,
-                    "content_type": file.content_type,
-                    "size": 0  # Não podemos obter o tamanho sem ler o arquivo
-                }
-                analysis_files[doc_type] = file_info
+                try:
+                    # Exemplo: Identificar tipo de arquivo pelo campo filename
+                    filename = file.filename.lower()
+                    
+                    # Mapeamento simplificado baseado no nome do arquivo
+                    if 'imposto' in filename or 'irpf' in filename:
+                        analysis_files['incomeTax'] = file
+                    elif 'registro' in filename or 'contrato' in filename:
+                        analysis_files['registration'] = file
+                    elif 'fiscal' in filename:
+                        analysis_files['taxStatus'] = file
+                    elif 'faturamento' in filename:
+                        if 'gerencial' in filename:
+                            analysis_files['managementBilling'] = file
+                        else:
+                            analysis_files['taxBilling'] = file
+                    else:
+                        # Usar índice para arquivos não identificados
+                        analysis_files[f'document_{len(analysis_files)}'] = file
+                        
+                except Exception as e:
+                    logger.error(f"Erro ao processar arquivo: {str(e)}")
         
-        # Salvar relatório no Firebase
+        # Salvar no Firebase
         result = save_report(
             user_id=user_id,
             user_name=user_name,
             planning_data=planning_data,
-            analysis_files=analysis_files,
+            analysis_files=analysis_files, 
             report_content=report_content
         )
         
-        if not result["success"]:
+        if not result.get("success"):
             raise HTTPException(
                 status_code=500, 
                 detail=f"Erro ao salvar relatório: {result.get('error', 'Erro desconhecido')}"
@@ -371,16 +405,15 @@ async def save_report_endpoint(
         
         return {
             "success": True,
-            "report_id": result.get("report_id", ""),
-            "message": "Relatório salvo com sucesso no Firebase"
+            "message": "Relatório salvo com sucesso",
+            "report_id": result.get("report_id")
         }
         
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Dados de relatório inválidos. Formato JSON esperado.")
     except Exception as e:
         logger.error(f"Erro ao salvar relatório: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro ao salvar relatório: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar relatório: {str(e)}")
 
 @app.get("/firebase_status/")
 async def firebase_status():
@@ -402,16 +435,17 @@ async def firebase_status():
             "reason": f"Erro ao verificar status do Firebase: {str(e)}"
         }
 
-# Inicializar Firebase ao iniciar a aplicação, se disponível
-if firebase_available:
-    try:
-        is_initialized = initialize_firebase()
-        if is_initialized:
-            logger.info("Firebase inicializado durante a inicialização da aplicação")
-        else:
-            logger.warning("Falha ao inicializar Firebase durante inicialização da aplicação")
-    except Exception as e:
-        logger.error(f"Erro ao inicializar Firebase durante a inicialização da aplicação: {str(e)}")
+# Inicializar Firebase e Stripe
+@app.on_event("startup")
+async def startup_event():
+    """Evento executado na inicialização da aplicação"""
+    # Inicializar Firebase
+    if firebase_available:
+        initialize_firebase()
+
+    # Inicializar Stripe
+    if stripe_available:
+        init_stripe()
 
 class DateRange(BaseModel):
     start_date: Optional[datetime.date] = None
@@ -457,3 +491,263 @@ async def get_reports(
     
     # Retornar os dados
     return result
+
+# Modelos para API Stripe
+class UserData(BaseModel):
+    user_id: str
+    email: str
+    nome: str
+
+class PagamentoRequest(BaseModel):
+    user_id: str
+    plano_id: str
+
+class CartaoRequest(BaseModel):
+    customer_id: str
+    payment_method_id: str
+    set_default: bool = False
+
+# Endpoints Stripe
+@app.post("/stripe/cliente/")
+async def criar_cliente_endpoint(user_data: UserData):
+    """Cria um cliente no Stripe"""
+    if not stripe_available:
+        raise HTTPException(status_code=501, detail="Integração com Stripe não disponível")
+
+    customer_id = criar_cliente(user_data.user_id, user_data.email, user_data.nome)
+    if not customer_id:
+        raise HTTPException(status_code=500, detail="Erro ao criar cliente no Stripe")
+
+    return {"success": True, "customer_id": customer_id}
+
+@app.post("/stripe/checkout/pagamento/")
+async def checkout_pagamento(pagamento: PagamentoRequest):
+    """Cria uma sessão de checkout para pagamento único"""
+    if not stripe_available:
+        raise HTTPException(status_code=501, detail="Integração com Stripe não disponível")
+
+    resultado = criar_sessao_checkout(pagamento.user_id, pagamento.plano_id)
+    if not resultado.get("success"):
+        raise HTTPException(status_code=500, detail=resultado.get("error", "Erro ao criar sessão de checkout"))
+
+    return resultado
+
+@app.post("/stripe/checkout/assinatura/")
+async def checkout_assinatura(pagamento: PagamentoRequest):
+    """Cria uma sessão de checkout para assinatura"""
+    if not stripe_available:
+        raise HTTPException(status_code=501, detail="Integração com Stripe não disponível")
+
+    resultado = criar_assinatura(pagamento.user_id, pagamento.plano_id)
+    if not resultado.get("success"):
+        raise HTTPException(status_code=500, detail=resultado.get("error", "Erro ao criar assinatura"))
+
+    return resultado
+
+@app.post("/stripe/webhook/")
+async def webhook(request: Request, stripe_signature: Optional[str] = Header(None)):
+    """Endpoint para receber webhooks do Stripe"""
+    if not stripe_available:
+        raise HTTPException(status_code=501, detail="Integração com Stripe não disponível")
+
+    payload = await request.body()
+    
+    resultado = processar_webhook(payload, stripe_signature)
+    if not resultado.get("success"):
+        raise HTTPException(status_code=400, detail=resultado.get("error", "Erro ao processar webhook"))
+
+    return {"success": True}
+
+@app.get("/stripe/cartoes/{customer_id}")
+async def listar_cartoes_endpoint(customer_id: str):
+    """Lista os cartões de um cliente"""
+    if not stripe_available:
+        raise HTTPException(status_code=501, detail="Integração com Stripe não disponível")
+
+    resultado = listar_cartoes(customer_id)
+    if not resultado.get("success"):
+        raise HTTPException(status_code=500, detail=resultado.get("error", "Erro ao listar cartões"))
+
+    return resultado
+
+@app.post("/stripe/cartoes/")
+async def adicionar_cartao_endpoint(cartao: CartaoRequest):
+    """Adiciona um cartão ao cliente"""
+    if not stripe_available:
+        raise HTTPException(status_code=501, detail="Integração com Stripe não disponível")
+
+    resultado = adicionar_cartao(cartao.customer_id, cartao.payment_method_id, cartao.set_default)
+    if not resultado.get("success"):
+        raise HTTPException(status_code=500, detail=resultado.get("error", "Erro ao adicionar cartão"))
+
+    return resultado
+
+@app.delete("/stripe/cartoes/{customer_id}/{payment_method_id}")
+async def remover_cartao_endpoint(customer_id: str, payment_method_id: str):
+    """Remove um cartão do cliente"""
+    if not stripe_available:
+        raise HTTPException(status_code=501, detail="Integração com Stripe não disponível")
+
+    resultado = remover_cartao(customer_id, payment_method_id)
+    if not resultado.get("success"):
+        raise HTTPException(status_code=500, detail=resultado.get("error", "Erro ao remover cartão"))
+
+    return resultado
+
+@app.put("/stripe/cartoes/{customer_id}/{payment_method_id}/padrao")
+async def atualizar_cartao_padrao_endpoint(customer_id: str, payment_method_id: str):
+    """Define um cartão como padrão"""
+    if not stripe_available:
+        raise HTTPException(status_code=501, detail="Integração com Stripe não disponível")
+
+    resultado = atualizar_cartao_padrao(customer_id, payment_method_id)
+    if not resultado.get("success"):
+        raise HTTPException(status_code=500, detail=resultado.get("error", "Erro ao atualizar cartão padrão"))
+
+    return resultado
+
+@app.post("/stripe/consumir_relatorio/{user_id}")
+async def consumir_relatorio_endpoint(user_id: str):
+    """Consome um relatório do plano do usuário"""
+    if not stripe_available:
+        raise HTTPException(status_code=501, detail="Integração com Stripe não disponível")
+
+    resultado = consumir_relatorio(user_id)
+    if not resultado.get("success"):
+        raise HTTPException(status_code=400, detail=resultado.get("error", "Não há relatórios disponíveis"))
+
+    return resultado
+
+@app.get("/stripe/pagamentos/{user_id}")
+async def historico_pagamentos(user_id: str):
+    """Obtém o histórico de pagamentos do usuário"""
+    if not stripe_available:
+        raise HTTPException(status_code=501, detail="Integração com Stripe não disponível")
+
+    resultado = obter_historico_pagamentos(user_id)
+    if not resultado.get("success"):
+        raise HTTPException(status_code=500, detail=resultado.get("error", "Erro ao obter histórico de pagamentos"))
+
+    return resultado
+
+# Endpoints adicionais para gestão de planos
+@app.get("/stripe/plano/{user_id}")
+async def obter_plano_usuario(user_id: str):
+    """Obtém informações do plano do usuário"""
+    if not stripe_available:
+        raise HTTPException(status_code=501, detail="Integração com Stripe não disponível")
+
+    try:
+        db = get_firestore_db()
+        user_doc = db.collection('usuarios').document(user_id).get()
+        
+        if not user_doc.exists:
+            return {
+                "success": True,
+                "tem_plano": False,
+                "message": "Usuário não possui plano ativo"
+            }
+            
+        user_data = user_doc.to_dict()
+        subscription = user_data.get('subscription', {})
+        
+        if not subscription:
+            return {
+                "success": True,
+                "tem_plano": False,
+                "message": "Usuário não possui plano ativo"
+            }
+        
+        # Verificar se a assinatura expirou
+        end_date = subscription.get('endDate')
+        if end_date and not subscription.get('autoRenew'):
+            if isinstance(end_date, datetime.datetime):
+                if end_date < datetime.datetime.now():
+                    return {
+                        "success": True,
+                        "tem_plano": False,
+                        "message": "Plano expirado"
+                    }
+        
+        return {
+            "success": True,
+            "tem_plano": True,
+            "plano": {
+                "nome": subscription.get('planName', 'Desconhecido'),
+                "relatorios_restantes": subscription.get('reportsLeft', 0),
+                "renovacao_automatica": subscription.get('autoRenew', False),
+                "data_inicio": subscription.get('startDate'),
+                "data_fim": subscription.get('endDate')
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao obter plano do usuário: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao obter plano do usuário: {str(e)}")
+
+@app.post("/stripe/assinatura/cancelar/{user_id}")
+async def cancelar_assinatura(user_id: str):
+    """Cancela a assinatura do usuário"""
+    if not stripe_available:
+        raise HTTPException(status_code=501, detail="Integração com Stripe não disponível")
+
+    try:
+        # Buscar dados do usuário
+        db = get_firestore_db()
+        user_doc = db.collection('usuarios').document(user_id).get()
+        
+        if not user_doc.exists:
+            raise HTTPException(status_code=404, detail="Usuário não encontrado")
+            
+        user_data = user_doc.to_dict()
+        subscription = user_data.get('subscription', {})
+        subscription_id = subscription.get('stripeSubscriptionId')
+        
+        if not subscription_id:
+            raise HTTPException(status_code=400, detail="Usuário não possui assinatura ativa")
+            
+        # Cancelar assinatura no Stripe
+        stripe.Subscription.modify(
+            subscription_id,
+            cancel_at_period_end=True
+        )
+        
+        # Atualizar no Firestore
+        db.collection('usuarios').document(user_id).update({
+            'subscription.autoRenew': False,
+            'subscription.canceledAt': firestore.SERVER_TIMESTAMP
+        })
+        
+        return {
+            "success": True,
+            "message": "Assinatura cancelada com sucesso"
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao cancelar assinatura: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao cancelar assinatura: {str(e)}")
+
+@app.get("/stripe/planos/")
+async def listar_planos():
+    """Lista os planos disponíveis"""
+    if not stripe_available:
+        raise HTTPException(status_code=501, detail="Integração com Stripe não disponível")
+    
+    from app.stripe_service import PLANOS
+    
+    # Formatar os planos para o frontend
+    planos_formatados = []
+    for plano_id, plano in PLANOS.items():
+        planos_formatados.append({
+            "id": plano_id,
+            "nome": plano["name"],
+            "descricao": plano["description"],
+            "preco": plano["price"] / 100,  # Converter de centavos para reais
+            "relatorios": plano["reports"],
+            "desconto": plano["discount"]
+        })
+    
+    return {
+        "success": True,
+        "planos": planos_formatados
+    }
