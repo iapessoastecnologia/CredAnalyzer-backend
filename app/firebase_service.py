@@ -1,5 +1,3 @@
-import firebase_admin
-from firebase_admin import credentials, firestore
 import os
 from dotenv import load_dotenv
 import time
@@ -13,6 +11,16 @@ logger = logging.getLogger(__name__)
 # Carregar variáveis de ambiente
 load_dotenv()
 
+# Tentar importar o firebase_admin
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+    firebase_admin_available = True
+except ImportError as e:
+    firebase_admin_available = False
+    logger.error(f"Erro ao importar firebase_admin: {str(e)}")
+    logger.error("As funcionalidades do Firebase não estarão disponíveis. Verifique se o pacote está instalado: pip install firebase-admin")
+
 def initialize_firebase():
     """
     Inicializa o Firebase Admin SDK para uso no backend.
@@ -20,6 +28,11 @@ def initialize_firebase():
     ou nas variáveis de configuração separadas.
     """
     try:
+        # Garantir que o firebase_admin está disponível
+        if not firebase_admin_available:
+            logger.error("Firebase não disponível")
+            return False
+            
         # Verificar se já está inicializado
         if firebase_admin._apps:
             logger.info("Firebase já está inicializado")
@@ -160,6 +173,12 @@ def get_firestore_db():
     """Retorna uma instância do banco de dados Firestore ou simulador."""
     global _firestore_simulator
     
+    if not firebase_admin_available:
+        logger.warning("Firebase não disponível, usando simulador")
+        if _firestore_simulator is None:
+            _firestore_simulator = FirestoreSimulator()
+        return _firestore_simulator
+    
     if not firebase_admin._apps:
         if not initialize_firebase():
             logger.warning("Firebase não inicializado, usando simulador")
@@ -190,6 +209,11 @@ def save_report(user_id, user_name, planning_data, analysis_files=None, report_c
         dict: Resultado da operação
     """
     try:
+        # Verificar se o firebase_admin está disponível
+        if not firebase_admin_available:
+            logger.error("Módulo firebase_admin não encontrado")
+            return {"success": False, "error": "Módulo firebase_admin não está disponível"}
+            
         # Inicializar Firebase se necessário
         if not firebase_admin._apps:
             if not initialize_firebase():
@@ -283,6 +307,11 @@ def get_reports_by_date_range(user_id=None, start_date=None, end_date=None):
         dict: Relatórios encontrados ou mensagem de erro
     """
     try:
+        # Verificar se o firebase_admin está disponível
+        if not firebase_admin_available:
+            logger.error("Módulo firebase_admin não encontrado")
+            return {"success": False, "error": "Módulo firebase_admin não está disponível", "reports": []}
+            
         # Inicializar Firebase se necessário
         if not firebase_admin._apps:
             if not initialize_firebase():

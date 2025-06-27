@@ -14,7 +14,7 @@ import datetime
 
 # Importar módulos Firebase
 try:
-    from app.firebase_service import initialize_firebase, save_report, get_reports_by_date_range
+    from app.firebase_service import initialize_firebase, save_report, get_reports_by_date_range, firebase_admin_available
     firebase_available = True
 except ImportError:
     firebase_available = False
@@ -322,12 +322,19 @@ async def save_report_endpoint(
     if not firebase_available:
         raise HTTPException(status_code=501, detail="Firebase não está disponível")
     
+    if not firebase_admin_available:
+        raise HTTPException(status_code=501, detail="Módulo firebase_admin não está disponível. Instale-o com: pip install firebase-admin")
+    
     try:
         # Inicializar Firebase se necessário
-        if not firebase_admin._apps:
-            success = initialize_firebase()
-            if not success:
-                raise HTTPException(status_code=500, detail="Não foi possível inicializar o Firebase")
+        try:
+            import firebase_admin
+            if not firebase_admin._apps:
+                success = initialize_firebase()
+                if not success:
+                    raise HTTPException(status_code=500, detail="Não foi possível inicializar o Firebase")
+        except (ImportError, NameError) as e:
+            raise HTTPException(status_code=500, detail=f"Erro ao acessar firebase_admin: {str(e)}")
         
         # Converter string JSON para dicionário
         data = json.loads(report_data)
@@ -420,8 +427,13 @@ async def firebase_status():
     """Verifica se a integração com Firebase está disponível e configurada"""
     if not firebase_available:
         return {"available": False, "reason": "Módulo firebase_service não encontrado"}
+        
+    if not firebase_admin_available:
+        return {"available": False, "reason": "Módulo firebase_admin não está disponível. Instale-o com: pip install firebase-admin"}
     
     try:
+        # Verificar se o módulo firebase_admin está inicializado
+        import firebase_admin
         is_initialized = initialize_firebase()
         
         return {
@@ -441,11 +453,17 @@ async def startup_event():
     """Evento executado na inicialização da aplicação"""
     # Inicializar Firebase
     if firebase_available:
-        initialize_firebase()
+        try:
+            initialize_firebase()
+        except Exception as e:
+            logger.error(f"Erro ao inicializar Firebase no startup: {str(e)}")
 
     # Inicializar Stripe
     if stripe_available:
-        init_stripe()
+        try:
+            init_stripe()
+        except Exception as e:
+            logger.error(f"Erro ao inicializar Stripe no startup: {str(e)}")
 
 class DateRange(BaseModel):
     start_date: Optional[datetime.date] = None
@@ -464,11 +482,18 @@ async def get_reports(
     """
     if not firebase_available:
         raise HTTPException(status_code=501, detail="Funcionalidade do Firebase não disponível")
+        
+    if not firebase_admin_available:
+        raise HTTPException(status_code=501, detail="Módulo firebase_admin não está disponível. Instale-o com: pip install firebase-admin")
     
     # Inicializar Firebase se necessário
-    if not firebase_admin._apps:
-        if not initialize_firebase():
-            raise HTTPException(status_code=500, detail="Falha ao inicializar Firebase")
+    try:
+        import firebase_admin
+        if not firebase_admin._apps:
+            if not initialize_firebase():
+                raise HTTPException(status_code=500, detail="Falha ao inicializar Firebase")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao acessar firebase_admin: {str(e)}")
     
     # Converter strings de data para objetos date
     start_date_obj = None
