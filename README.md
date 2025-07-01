@@ -76,6 +76,8 @@ Acesse http://localhost:8000/docs para visualizar a documentação interativa da
 #### Gestão de Assinaturas
 - `POST /stripe/consumir_relatorio/{user_id}`: Consome um relatório do plano do usuário
 - `GET /stripe/pagamentos/{user_id}`: Obtém o histórico de pagamentos do usuário
+- `POST /pagamentos/`: Salva informações de pagamento no banco de dados
+- `POST /pagamento/pix/`: Cria um pagamento via PIX
 
 ### Planos Disponíveis
 
@@ -121,6 +123,29 @@ usuarios/
 ```
 pagamentos/
    {paymentId}/
+     userId: string,
+     temPlano: boolean,
+     telefone: string (opcional),
+     subscription: {
+       autoRenew: boolean,
+       endDate: timestamp,
+       paymentInfo: {
+         amount: number,
+         lastPaymentDate: timestamp,
+         paymentId: string,
+         paymentMethod: string,
+         planId: string,
+         planName: string
+       },
+       reportsLeft: number,
+       startDate: timestamp
+     }
+```
+
+#### pagamentos_historico (mantido para compatibilidade)
+```
+pagamentos_historico/
+   {paymentId}/
      usuarioId: string,
      planName: string,
      amount: number,
@@ -128,7 +153,7 @@ pagamentos/
      timestamp: timestamp,
      status: string,
      stripePaymentId: string,
-     tipo: string (assinatura, pagamento_unico, renovacao_assinatura)
+     tipo: string (assinatura, pagamento_unico, renovacao_assinatura, pagamento_pix)
 ```
 
 #### cartoes

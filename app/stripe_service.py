@@ -249,32 +249,47 @@ def processar_webhook(payload, sig_header):
     Processa webhooks enviados pelo Stripe
     
     Args:
-        payload (str): Conteúdo raw do webhook
-        sig_header (str): Assinatura do webhook
+        payload (bytes): Payload do webhook
+        sig_header (str): Cabeçalho de assinatura
         
     Returns:
-        dict: Resultado do processamento ou erro
+        dict: Resultado do processamento
     """
+    endpoint_secret = os.getenv('STRIPE_WEBHOOK_SECRET')
+    
     try:
-        # Verificar assinatura do webhook
-        webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
-        
-        if not webhook_secret:
-            logger.warning("STRIPE_WEBHOOK_SECRET não definida. Pulando verificação de assinatura.")
-            event = stripe.Event.construct_from(json.loads(payload), stripe.api_key)
+        # Verificar assinatura se tivermos o segredo
+        if endpoint_secret:
+            try:
+                event = stripe.Webhook.construct_event(
+                    payload, sig_header, endpoint_secret
+                )
+            except ValueError as e:
+                # Payload inválido
+                logger.error(f"Payload inválido: {str(e)}")
+                return {"success": False, "error": "Payload inválido"}
+            except stripe.error.SignatureVerificationError as e:
+                # Assinatura inválida
+                logger.error(f"Assinatura inválida: {str(e)}")
+                return {"success": False, "error": "Assinatura inválida"}
         else:
-            event = stripe.Webhook.construct_event(
-                payload, sig_header, webhook_secret
-            )
-            
-        # Processar evento
-        if event.type == 'checkout.session.completed':
-            session = event.data.object
+            # Se não temos o segredo, confiamos no payload
+            try:
+                event = json.loads(payload)
+            except json.JSONDecodeError:
+                logger.error("Payload não é um JSON válido")
+                return {"success": False, "error": "Payload inválido"}
+        
+        logger.info(f"Evento Stripe recebido: {event['type']}")
+        
+        # Processar eventos específicos
+        if event['type'] == 'checkout.session.completed':
+            session = event['data']['object']
             
             # Extrair informações do metadata
-            user_id = session.metadata.get('user_id')
-            plano_id = session.metadata.get('plano_id')
-            reports = int(session.metadata.get('reports', 0))
+            user_id = session['metadata'].get('user_id')
+            plano_id = session['metadata'].get('plano_id')
+            reports = int(session['metadata'].get('reports', 0))
             
             if not user_id or not plano_id or not reports:
                 logger.error("Metadata incompleta na sessão de checkout")
@@ -284,11 +299,12 @@ def processar_webhook(payload, sig_header):
             db = get_firestore_db()
             
             # Verificar se é assinatura ou pagamento único
-            if session.mode == 'subscription':
+            if session['mode'] == 'subscription':
                 # Assinatura
-                subscription_id = session.subscription
+                subscription_id = session['subscription']
                 subscription = stripe.Subscription.retrieve(subscription_id)
                 
+                # Estrutura antiga (mantida para compatibilidade)
                 db.collection('usuarios').document(user_id).set({
                     'subscription': {
                         'planName': PLANOS[plano_id]['name'],
@@ -300,20 +316,54 @@ def processar_webhook(payload, sig_header):
                     }
                 }, merge=True)
                 
-                # Registrar pagamento
-                db.collection('pagamentos').add({
+                # Nova estrutura na coleção pagamentos
+                payment_data = {
+                    "subscription": {
+                        "autoRenew": True,
+                        "endDate": datetime.fromtimestamp(subscription.current_period_end),
+                        "paymentInfo": {
+                            "amount": session['amount_total'] / 100.0,
+                            "lastPaymentDate": datetime.now(),
+                            "paymentId": session['payment_intent'],
+                            "paymentMethod": "card",
+                            "planId": plano_id,
+                            "planName": PLANOS[plano_id]['name']
+                        },
+                        "reportsLeft": reports,
+                        "startDate": datetime.now()
+                    },
+                    "temPlano": True,
+                    "userId": user_id
+                }
+                
+                # Salvar na coleção "pagamentos"
+                pagamento_ref = db.collection('pagamentos').document()
+                pagamento_ref.set(payment_data)
+                
+                # Atualizar o documento do usuário com a referência ao pagamento
+                db.collection('usuarios').document(user_id).set({
+                    'pagamentos': {
+                        pagamento_ref.id: {
+                            'data': datetime.now()
+                        }
+                    }
+                }, merge=True)
+                
+                # Registrar pagamento no histórico (mantido para compatibilidade)
+                db.collection('pagamentos_historico').add({
                     'usuarioId': user_id,
                     'planName': PLANOS[plano_id]['name'],
-                    'amount': session.amount_total,
+                    'amount': session['amount_total'],
                     'paymentMethod': 'card',
                     'timestamp': firestore.SERVER_TIMESTAMP,
                     'status': 'completed',
-                    'stripePaymentId': session.payment_intent,
+                    'stripePaymentId': session['payment_intent'],
                     'tipo': 'assinatura'
                 })
                 
             else:
                 # Pagamento único
+                # Estrutura antiga (mantida para compatibilidade)
                 db.collection('usuarios').document(user_id).set({
                     'subscription': {
                         'planName': PLANOS[plano_id]['name'],
@@ -323,25 +373,57 @@ def processar_webhook(payload, sig_header):
                     }
                 }, merge=True)
                 
-                # Registrar pagamento
-                db.collection('pagamentos').add({
+                # Nova estrutura na coleção pagamentos
+                payment_data = {
+                    "subscription": {
+                        "autoRenew": False,
+                        "paymentInfo": {
+                            "amount": session['amount_total'] / 100.0,
+                            "lastPaymentDate": datetime.now(),
+                            "paymentId": session['payment_intent'],
+                            "paymentMethod": "card",
+                            "planId": plano_id,
+                            "planName": PLANOS[plano_id]['name']
+                        },
+                        "reportsLeft": reports,
+                        "startDate": datetime.now()
+                    },
+                    "temPlano": True,
+                    "userId": user_id
+                }
+                
+                # Salvar na coleção "pagamentos"
+                pagamento_ref = db.collection('pagamentos').document()
+                pagamento_ref.set(payment_data)
+                
+                # Atualizar o documento do usuário com a referência ao pagamento
+                db.collection('usuarios').document(user_id).set({
+                    'pagamentos': {
+                        pagamento_ref.id: {
+                            'data': datetime.now()
+                        }
+                    }
+                }, merge=True)
+                
+                # Registrar pagamento no histórico (mantido para compatibilidade)
+                db.collection('pagamentos_historico').add({
                     'usuarioId': user_id,
                     'planName': PLANOS[plano_id]['name'],
-                    'amount': session.amount_total,
+                    'amount': session['amount_total'],
                     'paymentMethod': 'card',
                     'timestamp': firestore.SERVER_TIMESTAMP,
                     'status': 'completed',
-                    'stripePaymentId': session.payment_intent,
+                    'stripePaymentId': session['payment_intent'],
                     'tipo': 'pagamento_unico'
                 })
                 
             logger.info(f"Pagamento processado com sucesso para o usuário {user_id}")
             return {"success": True}
             
-        elif event.type == 'invoice.payment_succeeded':
+        elif event['type'] == 'invoice.payment_succeeded':
             # Renovação de assinatura
-            invoice = event.data.object
-            subscription_id = invoice.subscription
+            invoice = event['data']['object']
+            subscription_id = invoice['subscription']
             
             if not subscription_id:
                 return {"success": False, "error": "ID de assinatura não encontrado"}
@@ -352,11 +434,11 @@ def processar_webhook(payload, sig_header):
             # Buscar usuário pelo customer_id
             db = get_firestore_db()
             usuarios_ref = db.collection('usuarios')
-            query = usuarios_ref.where('stripeCustomerId', '==', invoice.customer)
+            query = usuarios_ref.where('stripeCustomerId', '==', invoice['customer'])
             usuarios = query.get()
             
             if not usuarios:
-                logger.error(f"Usuário não encontrado para customer_id {invoice.customer}")
+                logger.error(f"Usuário não encontrado para customer_id {invoice['customer']}")
                 return {"success": False, "error": "Usuário não encontrado"}
                 
             user_doc = usuarios[0]
@@ -377,7 +459,7 @@ def processar_webhook(payload, sig_header):
                 logger.error(f"Plano não identificado para o usuário {user_id}")
                 return {"success": False, "error": "Plano não identificado"}
                 
-            # Atualizar assinatura do usuário
+            # Estrutura antiga (mantida para compatibilidade)
             db.collection('usuarios').document(user_id).set({
                 'subscription': {
                     'planName': PLANOS[plano_id]['name'],
@@ -389,15 +471,48 @@ def processar_webhook(payload, sig_header):
                 }
             }, merge=True)
             
-            # Registrar pagamento
-            db.collection('pagamentos').add({
+            # Nova estrutura na coleção pagamentos
+            payment_data = {
+                "subscription": {
+                    "autoRenew": True,
+                    "endDate": datetime.fromtimestamp(subscription.current_period_end),
+                    "paymentInfo": {
+                        "amount": invoice['amount_paid'] / 100.0,
+                        "lastPaymentDate": datetime.now(),
+                        "paymentId": invoice['payment_intent'],
+                        "paymentMethod": "card",
+                        "planId": plano_id,
+                        "planName": PLANOS[plano_id]['name']
+                    },
+                    "reportsLeft": PLANOS[plano_id]['reports'],
+                    "startDate": datetime.now()
+                },
+                "temPlano": True,
+                "userId": user_id
+            }
+            
+            # Salvar na coleção "pagamentos"
+            pagamento_ref = db.collection('pagamentos').document()
+            pagamento_ref.set(payment_data)
+            
+            # Atualizar o documento do usuário com a referência ao pagamento
+            db.collection('usuarios').document(user_id).set({
+                'pagamentos': {
+                    pagamento_ref.id: {
+                        'data': datetime.now()
+                    }
+                }
+            }, merge=True)
+            
+            # Registrar pagamento no histórico (mantido para compatibilidade)
+            db.collection('pagamentos_historico').add({
                 'usuarioId': user_id,
                 'planName': PLANOS[plano_id]['name'],
-                'amount': invoice.amount_paid,
+                'amount': invoice['amount_paid'],
                 'paymentMethod': 'card',
                 'timestamp': firestore.SERVER_TIMESTAMP,
                 'status': 'completed',
-                'stripePaymentId': invoice.payment_intent,
+                'stripePaymentId': invoice['payment_intent'],
                 'tipo': 'renovacao_assinatura'
             })
             
@@ -405,17 +520,17 @@ def processar_webhook(payload, sig_header):
             return {"success": True}
             
         # Outros eventos que podemos processar:
-        elif event.type == 'customer.subscription.deleted':
-            subscription = event.data.object
+        elif event['type'] == 'customer.subscription.deleted':
+            subscription = event['data']['object']
             
             # Buscar usuário pelo customer_id
             db = get_firestore_db()
             usuarios_ref = db.collection('usuarios')
-            query = usuarios_ref.where('stripeCustomerId', '==', subscription.customer)
+            query = usuarios_ref.where('stripeCustomerId', '==', subscription['customer'])
             usuarios = query.get()
             
             if not usuarios:
-                logger.error(f"Usuário não encontrado para customer_id {subscription.customer}")
+                logger.error(f"Usuário não encontrado para customer_id {subscription['customer']}")
                 return {"success": False, "error": "Usuário não encontrado"}
                 
             user_doc = usuarios[0]
@@ -432,7 +547,7 @@ def processar_webhook(payload, sig_header):
             logger.info(f"Assinatura cancelada para o usuário {user_id}")
             return {"success": True}
             
-        logger.info(f"Evento do Stripe processado: {event.type}")
+        logger.info(f"Evento do Stripe processado: {event['type']}")
         return {"success": True}
         
     except Exception as e:
@@ -709,7 +824,7 @@ def obter_historico_pagamentos(user_id):
     """
     try:
         db = get_firestore_db()
-        pagamentos_ref = db.collection('pagamentos')
+        pagamentos_ref = db.collection('pagamentos_historico')
         query = pagamentos_ref.where('usuarioId', '==', user_id)
         pagamentos = query.get()
         
@@ -729,4 +844,96 @@ def obter_historico_pagamentos(user_id):
         
     except Exception as e:
         logger.error(f"Erro ao obter histórico de pagamentos: {str(e)}")
+        return {"success": False, "error": str(e)}
+
+def criar_pagamento_pix(user_id, plano_id, telefone=None):
+    """
+    Cria um pagamento via PIX
+    
+    Args:
+        user_id (str): ID do usuário
+        plano_id (str): ID do plano (BASICO, INTERMEDIARIO, AVANCADO)
+        telefone (str, optional): Telefone do usuário
+        
+    Returns:
+        dict: Informações do pagamento ou erro
+    """
+    try:
+        if plano_id not in PLANOS:
+            return {"success": False, "error": "Plano inválido"}
+            
+        plano = PLANOS[plano_id]
+        
+        # Gerar ID de pagamento mockado (em produção seria o ID do Stripe ou outra plataforma de pagamento)
+        payment_id = f"mock_payment_{int(datetime.now().timestamp() * 1000)}"
+        
+        # Obter instância do Firestore
+        db = get_firestore_db()
+        
+        # Criar dados do pagamento
+        payment_data = {
+            "subscription": {
+                "autoRenew": True,
+                "endDate": datetime.now().replace(year=datetime.now().year + 1),  # 1 ano de validade
+                "paymentInfo": {
+                    "amount": plano['price'] / 100.0,  # Converter de centavos para reais
+                    "lastPaymentDate": datetime.now(),
+                    "paymentId": payment_id,
+                    "paymentMethod": "pix",
+                    "planId": plano_id,
+                    "planName": plano['name']
+                },
+                "reportsLeft": plano['reports'],
+                "startDate": datetime.now()
+            },
+            "temPlano": True,
+            "userId": user_id
+        }
+        
+        if telefone:
+            payment_data["telefone"] = telefone
+        
+        # Salvar na coleção "pagamentos"
+        pagamento_ref = db.collection('pagamentos').document()
+        pagamento_ref.set(payment_data)
+        
+        # Atualizar o documento do usuário
+        db.collection('usuarios').document(user_id).set({
+            'subscription': {
+                'planName': plano['name'],
+                'reportsLeft': plano['reports'],
+                'startDate': firestore.SERVER_TIMESTAMP,
+                'endDate': payment_data["subscription"]["endDate"],
+                'autoRenew': True
+            },
+            'pagamentos': {
+                pagamento_ref.id: {
+                    'data': datetime.now()
+                }
+            }
+        }, merge=True)
+        
+        # Registrar pagamento no histórico (mantido para compatibilidade)
+        db.collection('pagamentos_historico').add({
+            'usuarioId': user_id,
+            'planName': plano['name'],
+            'amount': plano['price'],
+            'paymentMethod': 'pix',
+            'timestamp': firestore.SERVER_TIMESTAMP,
+            'status': 'completed',
+            'stripePaymentId': payment_id,
+            'tipo': 'pagamento_pix'
+        })
+        
+        return {
+            "success": True,
+            "payment_id": payment_id,
+            "pagamento_ref": pagamento_ref.id,
+            "plano": plano['name'],
+            "valor": plano['price'] / 100.0,
+            "reports": plano['reports']
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao criar pagamento PIX: {str(e)}")
         return {"success": False, "error": str(e)} 

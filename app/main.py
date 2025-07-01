@@ -25,7 +25,7 @@ try:
     from app.stripe_service import (
         init_stripe, criar_cliente, criar_sessao_checkout, criar_assinatura,
         processar_webhook, listar_cartoes, adicionar_cartao, remover_cartao,
-        atualizar_cartao_padrao, consumir_relatorio, obter_historico_pagamentos
+        atualizar_cartao_padrao, consumir_relatorio, obter_historico_pagamentos, criar_pagamento_pix
     )
     stripe_available = True
 except ImportError:
@@ -527,10 +527,28 @@ class PagamentoRequest(BaseModel):
     user_id: str
     plano_id: str
 
+class PixPagamentoRequest(BaseModel):
+    user_id: str
+    plano_id: str
+    telefone: Optional[str] = None
+
 class CartaoRequest(BaseModel):
     customer_id: str
     payment_method_id: str
     set_default: bool = False
+
+class PagamentoData(BaseModel):
+    user_id: str
+    payment_id: str
+    payment_method: str
+    amount: float
+    plan_id: str
+    plan_name: str
+    telefone: Optional[str] = None
+    auto_renew: bool = False
+    reports_left: int
+    start_date: datetime.datetime
+    end_date: Optional[datetime.datetime] = None
 
 # Endpoints Stripe
 @app.post("/stripe/cliente/")
@@ -559,29 +577,30 @@ async def checkout_pagamento(pagamento: PagamentoRequest):
 
 @app.post("/stripe/checkout/assinatura/")
 async def checkout_assinatura(pagamento: PagamentoRequest):
-    """Cria uma sessão de checkout para assinatura"""
+    """Cria uma sessão de checkout para assinatura recorrente"""
     if not stripe_available:
-        raise HTTPException(status_code=501, detail="Integração com Stripe não disponível")
-
+        raise HTTPException(status_code=503, detail="Serviço Stripe não está disponível")
+    
     resultado = criar_assinatura(pagamento.user_id, pagamento.plano_id)
-    if not resultado.get("success"):
-        raise HTTPException(status_code=500, detail=resultado.get("error", "Erro ao criar assinatura"))
-
-    return resultado
+    
+    if resultado.get("success"):
+        return resultado
+    else:
+        raise HTTPException(status_code=400, detail=resultado.get("error", "Erro ao criar assinatura"))
 
 @app.post("/stripe/webhook/")
 async def webhook(request: Request, stripe_signature: Optional[str] = Header(None)):
-    """Endpoint para receber webhooks do Stripe"""
+    """Recebe webhook do Stripe"""
     if not stripe_available:
-        raise HTTPException(status_code=501, detail="Integração com Stripe não disponível")
-
-    payload = await request.body()
+        raise HTTPException(status_code=503, detail="Serviço Stripe não está disponível")
     
+    payload = await request.body()
     resultado = processar_webhook(payload, stripe_signature)
-    if not resultado.get("success"):
+    
+    if resultado.get("success"):
+        return resultado
+    else:
         raise HTTPException(status_code=400, detail=resultado.get("error", "Erro ao processar webhook"))
-
-    return {"success": True}
 
 @app.get("/stripe/cartoes/{customer_id}")
 async def listar_cartoes_endpoint(customer_id: str):
@@ -645,15 +664,75 @@ async def consumir_relatorio_endpoint(user_id: str):
 
 @app.get("/stripe/pagamentos/{user_id}")
 async def historico_pagamentos(user_id: str):
-    """Obtém o histórico de pagamentos do usuário"""
+    """
+    Obtém o histórico de pagamentos do usuário
+    """
     if not stripe_available:
-        raise HTTPException(status_code=501, detail="Integração com Stripe não disponível")
-
+        raise HTTPException(status_code=503, detail="Serviço Stripe não está disponível")
+    
     resultado = obter_historico_pagamentos(user_id)
-    if not resultado.get("success"):
-        raise HTTPException(status_code=500, detail=resultado.get("error", "Erro ao obter histórico de pagamentos"))
+    
+    if resultado.get("success"):
+        return resultado
+    else:
+        raise HTTPException(status_code=400, detail=resultado.get("error", "Erro ao obter histórico de pagamentos"))
 
-    return resultado
+@app.post("/pagamentos/")
+async def salvar_pagamento(pagamento_data: PagamentoData):
+    """
+    Salva os dados de pagamento no Firestore
+    """
+    if not firebase_available:
+        raise HTTPException(status_code=503, detail="Serviço Firebase não está disponível")
+    
+    try:
+        # Obter instância do Firestore
+        from firebase_admin import firestore
+        db = get_firestore_db()
+        
+        # Preparar os dados do pagamento
+        payment_data = {
+            "subscription": {
+                "autoRenew": pagamento_data.auto_renew,
+                "endDate": pagamento_data.end_date,
+                "paymentInfo": {
+                    "amount": pagamento_data.amount,
+                    "lastPaymentDate": pagamento_data.start_date,
+                    "paymentId": pagamento_data.payment_id,
+                    "paymentMethod": pagamento_data.payment_method,
+                    "planId": pagamento_data.plan_id,
+                    "planName": pagamento_data.plan_name
+                },
+                "reportsLeft": pagamento_data.reports_left,
+                "startDate": pagamento_data.start_date
+            }
+        }
+        
+        if pagamento_data.telefone:
+            payment_data["telefone"] = pagamento_data.telefone
+        
+        payment_data["temPlano"] = True
+        payment_data["userId"] = pagamento_data.user_id
+        
+        # Salvar na coleção "pagamentos"
+        pagamento_ref = db.collection('pagamentos').document()
+        pagamento_ref.set(payment_data)
+        
+        # Atualizar o documento do usuário com a referência ao pagamento
+        usuario_ref = db.collection('usuarios').document(pagamento_data.user_id)
+        usuario_ref.set({
+            'pagamentos': {
+                pagamento_ref.id: {
+                    'data': pagamento_data.start_date
+                }
+            }
+        }, merge=True)
+        
+        return {"success": True, "pagamento_id": pagamento_ref.id}
+    
+    except Exception as e:
+        logger.error(f"Erro ao salvar pagamento: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar pagamento: {str(e)}")
 
 # Endpoints adicionais para gestão de planos
 @app.get("/stripe/plano/{user_id}")
@@ -776,3 +855,20 @@ async def listar_planos():
         "success": True,
         "planos": planos_formatados
     }
+
+@app.post("/pagamento/pix/")
+async def pagamento_pix(pagamento: PixPagamentoRequest):
+    """Cria um pagamento via PIX"""
+    if not stripe_available or not firebase_available:
+        raise HTTPException(status_code=503, detail="Serviços necessários não estão disponíveis")
+    
+    resultado = criar_pagamento_pix(
+        pagamento.user_id, 
+        pagamento.plano_id, 
+        pagamento.telefone
+    )
+    
+    if resultado.get("success"):
+        return resultado
+    else:
+        raise HTTPException(status_code=400, detail=resultado.get("error", "Erro ao criar pagamento PIX"))

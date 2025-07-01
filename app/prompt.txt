@@ -64,9 +64,9 @@ Sua tarefa é analisar os documentos fornecidos e os dados de planejamento para 
 
 #### 5.1 Capacidade de Pagamento
 
-**Parcela simulada realista:** R$ [valor com base em prazo e juros médios]
+**Parcela simulada realista:** R$ [valor com base em prazo e juros médios] - Considere um cenário padrão de 36 meses e 1,6% de juros
 
-**% de comprometimento do faturamento:** [XX]%
+**% de comprometimento do faturamento mensal:** [XX]% - Compromentimento de faturamento mensal para o pagamento das parcelas
 
 **Recomendado manter abaixo de:** 20% a 30%
 
