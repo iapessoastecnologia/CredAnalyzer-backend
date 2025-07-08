@@ -388,6 +388,10 @@ async def save_report_endpoint(
                             analysis_files['managementBilling'] = file
                         else:
                             analysis_files['taxBilling'] = file
+                    elif 'spc' in filename or 'serasa' in filename:
+                        analysis_files['spcSerasa'] = file
+                    elif 'demonstrativo' in filename or 'extrato' in filename:
+                        analysis_files['statement'] = file
                     else:
                         # Usar índice para arquivos não identificados
                         analysis_files[f'document_{len(analysis_files)}'] = file

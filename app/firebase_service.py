@@ -238,7 +238,9 @@ def save_report(user_id, user_name, planning_data, analysis_files=None, report_c
                         "registration": "Registro",
                         "taxStatus": "Situação Fiscal",
                         "taxBilling": "Faturamento Fiscal",
-                        "managementBilling": "Faturamento Gerencial"
+                        "managementBilling": "Faturamento Gerencial",
+                        "spcSerasa": "SPC e Serasa",
+                        "statement": "Demonstrativo"
                     }
                     
                     # Se for binário, salvamos apenas a informação de que o arquivo foi recebido

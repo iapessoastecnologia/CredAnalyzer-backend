@@ -48,6 +48,22 @@ A API estará disponível em http://localhost:8000
 
 Acesse http://localhost:8000/docs para visualizar a documentação interativa da API.
 
+## Tipos de Documentos Suportados
+
+O sistema suporta diversos tipos de documentos para análise:
+
+1. **Imposto de Renda**: Declaração de IR da empresa e sócios
+2. **Registro**: Contrato social e documentos de constituição
+3. **Situação Fiscal**: Certidões e documentos de regularidade fiscal
+4. **Faturamento Fiscal**: Notas fiscais e documentos oficiais
+5. **Faturamento Gerencial**: Relatórios internos de faturamento
+6. **SPC e Serasa**: Consultas e relatórios de bureaus de crédito
+7. **Demonstrativo**: Extratos bancários, fluxos de caixa e demonstrativos financeiros
+
+Os arquivos são reconhecidos automaticamente pelo nome ou podem ser especificados manualmente pelo cliente.
+
+Formatos aceitos: PDF, JPEG, PNG, DOC, DOCX.
+
 ## Integração com Stripe
 
 ### Configuração
