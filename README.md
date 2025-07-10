@@ -126,7 +126,8 @@ usuarios/
    {userId}/
      subscription: {
        planName: string,
-       reportsLeft: number,
+       creditosPlano: number,  # Créditos fixos do plano atual
+       reportsLeft: number,    # Créditos restantes que podem ser utilizados
        startDate: timestamp,
        endDate: timestamp,
        autoRenew: boolean,
@@ -153,7 +154,8 @@ pagamentos/
          planId: string,
          planName: string
        },
-       reportsLeft: number,
+       creditosPlano: number,  # Créditos fixos do plano
+       reportsLeft: number,    # Créditos restantes que podem ser utilizados
        startDate: timestamp
      }
 ```

@@ -551,6 +551,7 @@ class PagamentoData(BaseModel):
     telefone: Optional[str] = None
     auto_renew: bool = False
     reports_left: int
+    creditos_plano: int  # Novo campo para armazenar os créditos fixos do plano
     start_date: datetime.datetime
     end_date: Optional[datetime.datetime] = None
 
@@ -707,6 +708,7 @@ async def salvar_pagamento(pagamento_data: PagamentoData):
                     "planId": pagamento_data.plan_id,
                     "planName": pagamento_data.plan_name
                 },
+                "creditosPlano": pagamento_data.creditos_plano,  # Novo campo para os créditos fixos
                 "reportsLeft": pagamento_data.reports_left,
                 "startDate": pagamento_data.start_date
             }

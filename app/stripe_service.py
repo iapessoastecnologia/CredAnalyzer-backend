@@ -304,11 +304,17 @@ def processar_webhook(payload, sig_header):
                 subscription_id = session['subscription']
                 subscription = stripe.Subscription.retrieve(subscription_id)
                 
+                # Verificar créditos atuais do usuário, se houver
+                user_data = db.collection('usuarios').document(user_id).get().to_dict() or {}
+                subscription_atual = user_data.get('subscription', {})
+                reports_atuais = subscription_atual.get('reportsLeft', 0)
+                
                 # Estrutura antiga (mantida para compatibilidade)
                 db.collection('usuarios').document(user_id).set({
                     'subscription': {
                         'planName': PLANOS[plano_id]['name'],
-                        'reportsLeft': reports,
+                        'creditosPlano': reports,  # Novo campo para armazenar os créditos fixos do plano
+                        'reportsLeft': reports_atuais + reports,  # Somar créditos novos com os restantes
                         'startDate': firestore.SERVER_TIMESTAMP,
                         'endDate': datetime.fromtimestamp(subscription.current_period_end),
                         'autoRenew': True,
@@ -329,7 +335,8 @@ def processar_webhook(payload, sig_header):
                             "planId": plano_id,
                             "planName": PLANOS[plano_id]['name']
                         },
-                        "reportsLeft": reports,
+                        "creditosPlano": reports,  # Novo campo para armazenar os créditos fixos do plano
+                        "reportsLeft": reports_atuais + reports,  # Somar créditos novos com os restantes
                         "startDate": datetime.now()
                     },
                     "temPlano": True,
@@ -363,11 +370,17 @@ def processar_webhook(payload, sig_header):
                 
             else:
                 # Pagamento único
+                # Verificar créditos atuais do usuário, se houver
+                user_data = db.collection('usuarios').document(user_id).get().to_dict() or {}
+                subscription_atual = user_data.get('subscription', {})
+                reports_atuais = subscription_atual.get('reportsLeft', 0)
+                
                 # Estrutura antiga (mantida para compatibilidade)
                 db.collection('usuarios').document(user_id).set({
                     'subscription': {
                         'planName': PLANOS[plano_id]['name'],
-                        'reportsLeft': reports,
+                        'creditosPlano': reports,  # Novo campo para armazenar os créditos fixos do plano
+                        'reportsLeft': reports_atuais + reports,  # Somar créditos novos com os restantes
                         'startDate': firestore.SERVER_TIMESTAMP,
                         'autoRenew': False
                     }
@@ -385,7 +398,8 @@ def processar_webhook(payload, sig_header):
                             "planId": plano_id,
                             "planName": PLANOS[plano_id]['name']
                         },
-                        "reportsLeft": reports,
+                        "creditosPlano": reports,  # Novo campo para armazenar os créditos fixos do plano
+                        "reportsLeft": reports_atuais + reports,  # Somar créditos novos com os restantes
                         "startDate": datetime.now()
                     },
                     "temPlano": True,
@@ -458,12 +472,18 @@ def processar_webhook(payload, sig_header):
             if not plano_id:
                 logger.error(f"Plano não identificado para o usuário {user_id}")
                 return {"success": False, "error": "Plano não identificado"}
+            
+            # Verificar créditos atuais do usuário
+            subscription_atual = user_data.get('subscription', {})
+            reports_atuais = subscription_atual.get('reportsLeft', 0)
+            reports_do_plano = PLANOS[plano_id]['reports']
                 
             # Estrutura antiga (mantida para compatibilidade)
             db.collection('usuarios').document(user_id).set({
                 'subscription': {
                     'planName': PLANOS[plano_id]['name'],
-                    'reportsLeft': PLANOS[plano_id]['reports'],
+                    'creditosPlano': reports_do_plano,  # Novo campo para armazenar os créditos fixos do plano
+                    'reportsLeft': reports_atuais + reports_do_plano,  # Somar créditos novos com os restantes
                     'startDate': firestore.SERVER_TIMESTAMP,
                     'endDate': datetime.fromtimestamp(subscription.current_period_end),
                     'autoRenew': True,
@@ -484,7 +504,8 @@ def processar_webhook(payload, sig_header):
                         "planId": plano_id,
                         "planName": PLANOS[plano_id]['name']
                     },
-                    "reportsLeft": PLANOS[plano_id]['reports'],
+                    "creditosPlano": reports_do_plano,  # Novo campo para armazenar os créditos fixos do plano
+                    "reportsLeft": reports_atuais + reports_do_plano,  # Somar créditos novos com os restantes
                     "startDate": datetime.now()
                 },
                 "temPlano": True,
@@ -897,11 +918,17 @@ def criar_pagamento_pix(user_id, plano_id, telefone=None):
         pagamento_ref = db.collection('pagamentos').document()
         pagamento_ref.set(payment_data)
         
+        # Verificar créditos atuais do usuário, se houver
+        user_data = db.collection('usuarios').document(user_id).get().to_dict() or {}
+        subscription_atual = user_data.get('subscription', {})
+        reports_atuais = subscription_atual.get('reportsLeft', 0)
+        
         # Atualizar o documento do usuário
         db.collection('usuarios').document(user_id).set({
             'subscription': {
                 'planName': plano['name'],
-                'reportsLeft': plano['reports'],
+                'creditosPlano': plano['reports'],  # Novo campo para armazenar os créditos fixos do plano
+                'reportsLeft': reports_atuais + plano['reports'],  # Somar créditos novos com os restantes
                 'startDate': firestore.SERVER_TIMESTAMP,
                 'endDate': payment_data["subscription"]["endDate"],
                 'autoRenew': True
@@ -912,6 +939,11 @@ def criar_pagamento_pix(user_id, plano_id, telefone=None):
                 }
             }
         }, merge=True)
+        
+        # Atualizar também na coleção pagamentos
+        payment_data["subscription"]["creditosPlano"] = plano['reports']
+        payment_data["subscription"]["reportsLeft"] = reports_atuais + plano['reports']
+        pagamento_ref.set(payment_data)
         
         # Registrar pagamento no histórico (mantido para compatibilidade)
         db.collection('pagamentos_historico').add({
