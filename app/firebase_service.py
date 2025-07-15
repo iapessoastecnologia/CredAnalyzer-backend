@@ -230,8 +230,8 @@ def save_report(user_id, user_name, planning_data, analysis_files=None, report_c
         
         # Guardar metadados dos arquivos, sem fazer upload
         if analysis_files:
-            for doc_type, file_content in analysis_files.items():
-                if file_content:
+            for doc_type, file_list in analysis_files.items():
+                if file_list:
                     # Mapeamento de nomes em português
                     nomes_documentos = {
                         "incomeTax": "Imposto de Renda",
@@ -243,18 +243,30 @@ def save_report(user_id, user_name, planning_data, analysis_files=None, report_c
                         "statement": "Demonstrativo"
                     }
                     
-                    # Se for binário, salvamos apenas a informação de que o arquivo foi recebido
+                    # Obter nome da categoria em português
                     doc_name = nomes_documentos.get(doc_type, doc_type)
-                    documentos_enviados[doc_name] = {
-                        "arquivo_recebido": True,
-                        "timestamp": time.time()
-                    }
                     
-                    # Se tivermos metadados adicionais, incluí-los
-                    if hasattr(file_content, 'filename'):
-                        documentos_enviados[doc_name]['nome_arquivo'] = file_content.filename
-                    if hasattr(file_content, 'content_type'):
-                        documentos_enviados[doc_name]['tipo'] = file_content.content_type
+                    # Inicializar lista para esta categoria se ainda não existir
+                    if doc_name not in documentos_enviados:
+                        documentos_enviados[doc_name] = []
+                    
+                    # Processar cada arquivo na lista
+                    for idx, file_content in enumerate(file_list):
+                        if file_content:
+                            # Criar metadados para cada arquivo
+                            file_metadata = {
+                                "arquivo_recebido": True,
+                                "timestamp": time.time()
+                            }
+                            
+                            # Se tivermos metadados adicionais, incluí-los
+                            if hasattr(file_content, 'filename'):
+                                file_metadata['nome_arquivo'] = file_content.filename
+                            if hasattr(file_content, 'content_type'):
+                                file_metadata['tipo'] = file_content.content_type
+                            
+                            # Adicionar à lista de arquivos desta categoria
+                            documentos_enviados[doc_name].append(file_metadata)
         
         # Preparar dados de planejamento
         planejamento_inicial = {

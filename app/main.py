@@ -124,7 +124,9 @@ async def analyze_with_openai(combined_text: str) -> tuple:
 
 {combined_text}
 
-Forneça uma análise completa seguindo a estrutura solicitada."""
+Forneça uma análise completa seguindo a estrutura solicitada. 
+Note que pode haver múltiplos documentos para cada categoria (ex: múltiplos arquivos de Faturamento Fiscal ou SPC/Serasa).
+Considere todos os documentos em sua análise, mesmo que sejam da mesma categoria."""
 
         logger.info("Enviando texto para análise da OpenAI...")
         
@@ -243,14 +245,37 @@ async def analyze(
                     "text_length": 0
                 })
                 continue
-                
-            combined_text += f"\n=== DOCUMENTO: {file.filename} ===\n"
+            
+            # Identificar categoria do arquivo para uma melhor organização no texto
+            category = None
+            filename = file.filename.lower()
+            
+            if 'imposto' in filename or 'irpf' in filename:
+                category = 'Imposto de Renda'
+            elif 'registro' in filename or 'contrato' in filename:
+                category = 'Registro'
+            elif 'fiscal' in filename:
+                category = 'Situação Fiscal'
+            elif 'faturamento' in filename:
+                if 'gerencial' in filename:
+                    category = 'Faturamento Gerencial'
+                else:
+                    category = 'Faturamento Fiscal'
+            elif 'spc' in filename or 'serasa' in filename:
+                category = 'SPC e Serasa'
+            elif 'demonstrativo' in filename or 'extrato' in filename:
+                category = 'Demonstrativo'
+            else:
+                category = 'Documento Adicional'
+            
+            combined_text += f"\n=== DOCUMENTO ({category}): {file.filename} ===\n"
             combined_text += text + "\n\n"
             
             processed_files.append({
                 "filename": file.filename,
                 "status": "processado",
-                "text_length": len(text)
+                "text_length": len(text),
+                "category": category
             })
             
             logger.info(f"Arquivo {file.filename} processado com sucesso. Texto extraído: {len(text)} caracteres")
@@ -274,10 +299,20 @@ async def analyze(
     try:
         analysis, token_usage = await analyze_with_openai(combined_text)
         
+        # Agrupar arquivos processados por categoria
+        files_by_category = {}
+        for file in processed_files:
+            if "category" in file:
+                category = file["category"]
+                if category not in files_by_category:
+                    files_by_category[category] = []
+                files_by_category[category].append(file)
+        
         return {
             "success": True,
             "analysis": analysis,
             "processed_files": processed_files,
+            "files_by_category": files_by_category,
             "total_text_length": len(combined_text),
             "files_processed": len([f for f in processed_files if f['status'] == 'processado']),
             "token_usage": token_usage
@@ -377,24 +412,31 @@ async def save_report_endpoint(
                     filename = file.filename.lower()
                     
                     # Mapeamento simplificado baseado no nome do arquivo
+                    category = None
                     if 'imposto' in filename or 'irpf' in filename:
-                        analysis_files['incomeTax'] = file
+                        category = 'incomeTax'
                     elif 'registro' in filename or 'contrato' in filename:
-                        analysis_files['registration'] = file
+                        category = 'registration'
                     elif 'fiscal' in filename:
-                        analysis_files['taxStatus'] = file
+                        category = 'taxStatus'
                     elif 'faturamento' in filename:
                         if 'gerencial' in filename:
-                            analysis_files['managementBilling'] = file
+                            category = 'managementBilling'
                         else:
-                            analysis_files['taxBilling'] = file
+                            category = 'taxBilling'
                     elif 'spc' in filename or 'serasa' in filename:
-                        analysis_files['spcSerasa'] = file
+                        category = 'spcSerasa'
                     elif 'demonstrativo' in filename or 'extrato' in filename:
-                        analysis_files['statement'] = file
+                        category = 'statement'
                     else:
                         # Usar índice para arquivos não identificados
-                        analysis_files[f'document_{len(analysis_files)}'] = file
+                        category = f'document_{len(analysis_files)}'
+                    
+                    # Adicionar à lista de arquivos dessa categoria
+                    if category not in analysis_files:
+                        analysis_files[category] = []
+                    
+                    analysis_files[category].append(file)
                         
                 except Exception as e:
                     logger.error(f"Erro ao processar arquivo: {str(e)}")
