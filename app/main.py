@@ -115,7 +115,7 @@ async def analyze_with_openai(combined_text: str) -> tuple:
         system_prompt = load_prompt_from_file()
         
         # Limita o tamanho do texto se for muito grande (GPT tem limite de tokens)
-        max_chars = 50000  # Aproximadamente 12-15k tokens
+        max_chars = 150000  # Aproximadamente 12-15k tokens
         if len(combined_text) > max_chars:
             logger.warning(f"Texto muito longo ({len(combined_text)} chars). Truncando para {max_chars} chars.")
             combined_text = combined_text[:max_chars] + "\n\n[TEXTO TRUNCADO DEVIDO AO TAMANHO]"
@@ -136,7 +136,7 @@ Considere todos os documentos em sua análise, mesmo que sejam da mesma categori
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            max_tokens=2000,  # Ajuste conforme necessário
+            max_tokens=10000,  # Ajuste conforme necessário
             temperature=0.3   # Baixa para respostas mais consistentes
         )
         
