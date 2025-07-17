@@ -17,6 +17,19 @@ Instruções importantes:
    - Mantenha clara separação entre dados financeiros da pessoa jurídica e dados financeiros das pessoas físicas.
    - Ao calcular indicadores como DSCR ou comprometimento mensal, use exclusivamente os dados financeiros da empresa para análises da capacidade empresarial.
 
+3. Análise de carência solicitada:
+   - Avalie se o período de carência solicitado é compatível com o tipo de operação e finalidade do crédito.
+   - Compare com práticas de mercado para operações similares.
+   - Verifique o impacto da carência nas condições financeiras do contrato (taxa, prazo e valor da parcela após carência).
+   - Considere o fluxo de caixa da empresa para determinar se a carência é realmente necessária ou se é preferível iniciar pagamentos imediatamente.
+
+4. Análise de garantias:
+   - Avalie cada garantia individualmente quanto à liquidez, valor e qualidade.
+   - Calcule o LTV (Loan-to-Value) comparando o valor total de garantias com o valor solicitado.
+   - Classifique as garantias por ordem de qualidade (alta, média, baixa).
+   - Verifique se o tipo e valor das garantias são adequados para o valor solicitado e perfil de risco da operação.
+   - Considere se garantias adicionais podem ser necessárias para melhorar as chances de aprovação.
+
 Diretrizes para geração do relatório:
 Leia atentamente todos os arquivos enviados e relacione os dados importantes de forma clara e organizada.
 
@@ -49,11 +62,13 @@ Forma predominante de movimentação bancária:
 2. Dados da Solicitação de Crédito
 Valor solicitado:
 
-Carência solicitada:
+Carência solicitada: (indicar em meses e analisar adequação)
 
 Finalidade do crédito:
 
-Garantias apresentadas:
+Garantias apresentadas: (detalhar tipo, valor e qualidade de cada garantia)
+
+LTV (Loan-to-Value): (calcular o percentual do valor solicitado coberto pelas garantias)
 
 3. Situação Financeira da Empresa
 Dívidas registradas (SCR/BACEN):
@@ -87,9 +102,16 @@ Todos os cálculos financeiros (ex: simulação de parcelas, DSCR, comprometimen
 
 % de comprometimento do faturamento mensal: (indique percentual calculado)
 
-Recomendação: (indique limites ideais recomendados)
+Impacto da carência: (análise do impacto da carência solicitada no valor da parcela e na capacidade de pagamento)
 
-5.2 Probabilidade de Aprovação
+Recomendação: (indique limites ideais recomendados e se a carência é adequada)
+
+5.2 Avaliação das Garantias
+Adequação das garantias: (análise da suficiência, qualidade e liquidez das garantias apresentadas)
+
+Recomendações adicionais: (indicar se há necessidade de garantias complementares)
+
+5.3 Probabilidade de Aprovação
 Classificação: (Muito alta 🔵| Alta 🟢 | Média 🟡 | Baixa 🔴)
 
 Probabilidade estimada (%): (com justificativa técnica)
@@ -100,10 +122,10 @@ Liste pelo menos três pontos positivos com justificativas claras e técnicas (�
 7. Riscos ou Pontos de Atenção
 Liste pelo menos três riscos ou pontos de atenção com detalhamento técnico e recomendações específicas para cada ponto (⚠️).
 
-Linhas de Crédito Recomendadas
-Linha de Crédito | Justificativa detalhada | Juros médios ao mês | Prazo recomendado
---- | --- | --- | ---
-Exemplo: PRONAMPE | Explicação objetiva das vantagens específicas | 1,2% a 1,8% | 24 a 48 meses
+8. Linhas de Crédito Recomendadas
+Linha de Crédito | Justificativa detalhada | Juros médios ao mês | Prazo recomendado | Carência possível
+--- | --- | --- | --- | ---
+Exemplo: PRONAMPE | Explicação objetiva das vantagens específicas | 1,2% a 1,8% | 24 a 48 meses | 3 a 6 meses
 
 Sugira pelo menos três linhas de crédito detalhadas.
 
@@ -116,18 +138,9 @@ Sugira pelo menos três bancos.
 10. Conclusão e Recomendação Final
 Apresente uma síntese objetiva e técnica com a probabilidade geral de concessão do crédito.
 
-FORMATO:
-Use markdown para formatação
-
-Mantenha as tabelas organizadas
-
-Preserve os emojis e símbolos de marcação
-
 ## FORMATO:
 - Use markdown para formatação
 - Mantenha as tabelas organizadas
 - Preserve os emojis e símbolos de marcação
 - Inclua valores monetários sempre formatados (R$ X.XXX,XX)
 - Mantenha tom profissional e consultivo
-
-Mantenha tom profissional e consultivo

@@ -11,6 +11,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from pydantic import BaseModel
 import datetime
+import tiktoken
 
 # Importar módulos Firebase
 try:
@@ -102,56 +103,85 @@ Seja objetivo, profissional e destaque os pontos mais importantes."""
         logger.error(f"Erro ao carregar prompt: {str(e)}")
         return "Você é um analista financeiro. Analise os documentos fornecidos e forneça um relatório detalhado."
 
+# Parâmetros do modelo
+MODELO = "gpt-4o"
+LIMITE_TOTAL_TOKENS = 128000
+LIMITE_COMPLETION = 16384
+LIMITE_PROMPT = LIMITE_TOTAL_TOKENS - LIMITE_COMPLETION
+
 async def analyze_with_openai(combined_text: str) -> tuple:
     """Envia o texto extraído para análise da OpenAI e retorna a análise e o uso de tokens"""
     if not client:
         raise HTTPException(
-            status_code=500, 
+            status_code=500,
             detail="Cliente OpenAI não está configurado. Verifique a OPENAI_API_KEY."
         )
-    
+
     try:
         # Carrega o prompt do arquivo
         system_prompt = load_prompt_from_file()
-        
-        # Limita o tamanho do texto se for muito grande (GPT tem limite de tokens)
-        max_chars = 150000  # Aproximadamente 12-15k tokens
-        if len(combined_text) > max_chars:
-            logger.warning(f"Texto muito longo ({len(combined_text)} chars). Truncando para {max_chars} chars.")
-            combined_text = combined_text[:max_chars] + "\n\n[TEXTO TRUNCADO DEVIDO AO TAMANHO]"
-        
-        user_prompt = f"""Analise o seguinte conteúdo dos documentos empresariais:
 
-{combined_text}
+        # Parte fixa do prompt do usuário
+        prompt_fixo = (
+            "Analise o seguinte conteúdo dos documentos empresariais:\n\n"
+        )
+        prompt_final = (
+            "\n\nForneça uma análise completa seguindo a estrutura solicitada. \n"
+            "Note que pode haver múltiplos documentos para cada categoria "
+            "(ex: múltiplos arquivos de Faturamento Fiscal ou SPC/Serasa). "
+            "Considere todos os documentos em sua análise, mesmo que sejam da mesma categoria."
+        )
 
-Forneça uma análise completa seguindo a estrutura solicitada. 
-Note que pode haver múltiplos documentos para cada categoria (ex: múltiplos arquivos de Faturamento Fiscal ou SPC/Serasa).
-Considere todos os documentos em sua análise, mesmo que sejam da mesma categoria."""
+        # Inicializa o tokenizador
+        encoding = tiktoken.encoding_for_model(MODELO)
+
+        # Calcula tokens fixos (system + prompt + instruções)
+        system_tokens = len(encoding.encode(system_prompt))
+        fixed_tokens = len(encoding.encode(prompt_fixo + prompt_final))
+
+        # Quanto sobra para os documentos
+        tokens_disponiveis_para_docs = LIMITE_PROMPT - system_tokens - fixed_tokens
+
+        # Codifica o texto dos documentos
+        doc_tokens = encoding.encode(combined_text)
+
+        if len(doc_tokens) > tokens_disponiveis_para_docs:
+            logger.warning(
+                f"Texto muito grande ({len(doc_tokens)} tokens). "
+                f"Truncando para {tokens_disponiveis_para_docs} tokens."
+            )
+            doc_tokens = doc_tokens[:tokens_disponiveis_para_docs]
+            combined_text = encoding.decode(doc_tokens)
+            combined_text += "\n\n[TEXTO TRUNCADO AUTOMATICAMENTE]"
+
+        # Monta o prompt final
+        user_prompt = f"{prompt_fixo}{combined_text}{prompt_final}"
 
         logger.info("Enviando texto para análise da OpenAI...")
-        
+
+        # Envia para a API
         response = client.chat.completions.create(
-            model="gpt-4o-mini",  # Ou "gpt-4" se preferir
+            model=MODELO,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            max_tokens=10000,  # Ajuste conforme necessário
-            temperature=0.3   # Baixa para respostas mais consistentes
+            max_tokens=LIMITE_COMPLETION,
+            temperature=0.3
         )
-        
+
+        # Extrai resultado
         analysis = response.choices[0].message.content
         token_usage = {
             "prompt_tokens": response.usage.prompt_tokens,
             "completion_tokens": response.usage.completion_tokens,
             "total_tokens": response.usage.total_tokens
         }
-        
-        logger.info(f"Análise concluída. Tamanho da resposta: {len(analysis)} caracteres")
-        logger.info(f"Tokens utilizados: {token_usage}")
-        
+
+        logger.info(f"Análise concluída. Tokens utilizados: {token_usage}")
+
         return analysis, token_usage
-        
+
     except Exception as e:
         logger.error(f"Erro ao chamar OpenAI: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao processar análise: {str(e)}")
@@ -209,6 +239,19 @@ async def analyze(
             # Adicionar tempo na empresa
             if planning_json.get("timeInCompany"):
                 combined_text += f"Tempo na Empresa: {planning_json['timeInCompany']} anos\n"
+                
+            # Adicionar carência solicitada
+            if planning_json.get("gracePeriod"):
+                combined_text += f"Carência Solicitada: {planning_json['gracePeriod']} meses\n"
+            
+            # Adicionar garantias
+            if planning_json.get("collaterals") and isinstance(planning_json["collaterals"], list):
+                combined_text += "Garantias:\n"
+                for idx, collateral in enumerate(planning_json["collaterals"]):
+                    if isinstance(collateral, dict):
+                        tipo = collateral.get("type", "Não especificado")
+                        valor = collateral.get("value", 0)
+                        combined_text += f"  - Garantia {idx+1}: {tipo}, Valor: R$ {valor}\n"
                 
             combined_text += "\n\n"
         except json.JSONDecodeError as e:
