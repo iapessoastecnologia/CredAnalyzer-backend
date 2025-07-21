@@ -270,13 +270,16 @@ def save_report(user_id, user_name, planning_data, analysis_files=None, report_c
         
         # Preparar dados de planejamento
         planejamento_inicial = {
-            "segmentoEmpresa": planning_data.get("segment", ""),
             "objetivoCredito": planning_data.get("objective", ""),
             "valorCreditoBuscado": planning_data.get("creditAmount", 0),
             "tempoEmpresa": planning_data.get("timeInCompany", 0),
             "carenciaSolicitada": planning_data.get("gracePeriod", 0),
             "garantias": []
         }
+        
+        # Usar o segmento detectado a partir do CNAE
+        if planning_data.get("segment"):
+            planejamento_inicial["segmentoEmpresa"] = planning_data.get("segment")
         
         # Adicionar garantias, se existirem
         if planning_data.get("collaterals") and isinstance(planning_data["collaterals"], list):
@@ -289,9 +292,6 @@ def save_report(user_id, user_name, planning_data, analysis_files=None, report_c
                     planejamento_inicial["garantias"].append(garantia)
         
         # Ajustar campos personalizados, se presentes
-        if planning_data.get("segment") == "Outro" and planning_data.get("otherSegment"):
-            planejamento_inicial["segmentoEmpresa"] = planning_data.get("otherSegment", "")
-        
         if planning_data.get("objective") == "Outro" and planning_data.get("otherObjective"):
             planejamento_inicial["objetivoCredito"] = planning_data.get("otherObjective", "")
         

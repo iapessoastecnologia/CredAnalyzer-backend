@@ -1,3 +1,4 @@
+import re
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Request, Query, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict, Any
@@ -109,6 +110,80 @@ LIMITE_TOTAL_TOKENS = 128000
 LIMITE_COMPLETION = 16384
 LIMITE_PROMPT = LIMITE_TOTAL_TOKENS - LIMITE_COMPLETION
 
+def extrair_segmento_do_cnae(texto: str) -> str:
+    """
+    Extrai o segmento da empresa a partir do CNAE principal encontrado no cartão CNPJ.
+    
+    Args:
+        texto (str): Texto extraído do cartão CNPJ
+        
+    Returns:
+        str: Segmento da empresa ('Varejo', 'Indústria', 'Serviços', 'Tecnologia', 'Saúde', 'Educação' ou 'Outro')
+    """
+    logger.info("Extraindo segmento a partir do CNAE")
+    
+    # Padrões para buscar CNAE principal (diferentes formatos possíveis)
+    padroes_cnae = [
+        # Formato "CNAE principal"
+        r"CNAE\s+principal:?\s*(\d+\-\d+\/\d+|\d+\.\d+\-\d+\-\d+|\d+\-\d+|\d+\.\d+)",
+        
+        # Formato "atividade econômica principal"
+        r"atividade\s+econ[ôo]mica\s+principal:?\s*(\d+\-\d+\/\d+|\d+\.\d+\-\d+\-\d+|\d+\-\d+|\d+\.\d+)",
+        
+        # Formato "CÓDIGO E DESCRIÇÃO DA ATIVIDADE ECONÔMICA PRINCIPAL"
+        r"C[ÓO]DIGO\s+E\s+DESCRI[ÇC][ÃA]O\s+DA\s+ATIVIDADE\s+ECON[ÔO]MICA\s+PRINCIPAL[:\s]*(\d+\-\d+\/\d+|\d+\.\d+\-\d+\-\d+|\d+\-\d+|\d+\.\d+)",
+        
+        # Formato simplificado que busca apenas números em formato de CNAE após "principal"
+        r"principal\s*[:\-]?\s*(\d+\-\d+\/\d+|\d+\.\d+\-\d+\-\d+|\d+\-\d+|\d+\.\d+)"
+    ]
+    
+    # Buscar CNAE principal no texto usando os padrões definidos
+    for padrao in padroes_cnae:
+        match_cnae = re.search(padrao, texto, re.IGNORECASE)
+        if match_cnae:
+            cnae = match_cnae.group(1)
+            logger.info(f"CNAE principal encontrado: {cnae}")
+            
+            # Limpar o CNAE para ter apenas os primeiros dígitos (divisão)
+            cnae_limpo = re.sub(r"[^\d]", "", cnae)[:2]  # Pegar apenas os dois primeiros dígitos
+            
+            try:
+                cnae_num = int(cnae_limpo)
+                
+                # Classificar o CNAE de acordo com os segmentos
+                # Baseado na Classificação Nacional de Atividades Econômicas (IBGE)
+                
+                # Varejo: comércio varejista e atacadista (divisões 45 a 47)
+                if 45 <= cnae_num <= 47:
+                    return "Varejo"
+                    
+                # Indústria: indústrias extrativas e de transformação (divisões 05 a 33)
+                elif 5 <= cnae_num <= 33:
+                    return "Indústria"
+                    
+                # Tecnologia: Informação e comunicação (divisões 58 a 63) e Pesquisa científica (divisão 72)
+                elif (58 <= cnae_num <= 63) or cnae_num == 72:
+                    return "Tecnologia"
+                    
+                # Saúde: Atividades de atenção à saúde humana (divisões 86 a 88)
+                elif 86 <= cnae_num <= 88:
+                    return "Saúde"
+                    
+                # Educação: Educação (divisão 85)
+                elif cnae_num == 85:
+                    return "Educação"
+                    
+                # Serviços: Todos os outros CNAEs
+                else:
+                    return "Serviços"
+                    
+            except ValueError:
+                logger.warning(f"Não foi possível converter o CNAE '{cnae_limpo}' para número")
+                continue  # Tenta o próximo padrão se a conversão falhar
+    
+    logger.warning("Não foi encontrado CNAE principal no texto")
+    return "Outro"
+
 async def analyze_with_openai(combined_text: str) -> tuple:
     """Envia o texto extraído para análise da OpenAI e retorna a análise e o uso de tokens"""
     if not client:
@@ -209,6 +284,7 @@ async def analyze(
     
     combined_text = ""
     processed_files = []
+    cartao_cnpj_text = ""
     
     # Processar dados de planejamento, se fornecidos
     if planning_data:
@@ -218,12 +294,7 @@ async def analyze(
             
             combined_text += "=== DADOS DE PLANEJAMENTO ===\n"
             
-            # Adicionar segmento
-            if planning_json.get("segment"):
-                segment = planning_json["segment"]
-                if segment == "Outro" and planning_json.get("otherSegment"):
-                    segment = planning_json["otherSegment"]
-                combined_text += f"Segmento da Empresa: {segment}\n"
+            # Remover recepção do segmento - será extraído do cartão CNPJ
             
             # Adicionar objetivo
             if planning_json.get("objective"):
@@ -293,7 +364,11 @@ async def analyze(
             category = None
             filename = file.filename.lower()
             
-            if 'imposto' in filename or 'irpf' in filename:
+            # Verificar se é um cartão CNPJ para extrair o segmento
+            if 'cnpj' in filename or 'cartao' in filename:
+                category = 'Cartão CNPJ'
+                cartao_cnpj_text += text  # Armazenar texto do cartão CNPJ
+            elif 'imposto' in filename or 'irpf' in filename:
                 category = 'Imposto de Renda'
             elif 'registro' in filename or 'contrato' in filename:
                 category = 'Registro'
@@ -336,7 +411,30 @@ async def analyze(
             detail="Nenhum texto foi extraído dos arquivos enviados."
         )
     
+    # Extrair o segmento a partir do texto do cartão CNPJ
+    segment = "Outro"
+    if cartao_cnpj_text:
+        segment = extrair_segmento_do_cnae(cartao_cnpj_text)
+        logger.info(f"Segmento extraído do CNAE: {segment}")
+        
+        # Adicionar o segmento identificado aos dados de planejamento para o contexto da análise
+        combined_text = combined_text.replace("=== DADOS DE PLANEJAMENTO ===\n", 
+                                             f"=== DADOS DE PLANEJAMENTO ===\nSegmento da Empresa: {segment}\n")
+    else:
+        logger.warning("Cartão CNPJ não encontrado. Segmento não pôde ser extraído.")
+    
     logger.info(f"Extração concluída. Total de texto: {len(combined_text)} caracteres")
+    
+    # Atualizar os dados de planejamento para incluir o segmento extraído
+    if planning_data:
+        try:
+            planning_json = json.loads(planning_data)
+            planning_json["segment"] = segment
+            planning_data = json.dumps(planning_json)
+        except json.JSONDecodeError as e:
+            logger.error(f"Erro ao atualizar dados de planejamento: {str(e)}")
+    else:
+        planning_data = json.dumps({"segment": segment})
     
     # Segunda etapa: Enviar para OpenAI para análise
     try:
@@ -358,7 +456,8 @@ async def analyze(
             "files_by_category": files_by_category,
             "total_text_length": len(combined_text),
             "files_processed": len([f for f in processed_files if f['status'] == 'processado']),
-            "token_usage": token_usage
+            "token_usage": token_usage,
+            "detected_segment": segment  # Retornar o segmento extraído
         }
         
     except HTTPException:
