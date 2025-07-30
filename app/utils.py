@@ -20,16 +20,28 @@ async def extract_text_from_document(file: UploadFile) -> str:
     
     # Para arquivos PDF
     if content_type == "application/pdf":
-        return extract_text_from_pdf_bytes(file_content)
+        text = extract_text_from_pdf_bytes(file_content)
+        print(f"\n----- CONTEÚDO EXTRAÍDO DO PDF: {file.filename} -----")
+        print(f"{text[:500]}...")  # Mostra apenas os primeiros 500 caracteres
+        print(f"----- FIM DO CONTEÚDO EXTRAÍDO ({len(text)} caracteres) -----\n")
+        return text
     
     # Para imagens JPEG/PNG
     elif content_type in ["image/jpeg", "image/png"]:
-        return extract_text_from_image_bytes(file_content)
+        text = extract_text_from_image_bytes(file_content)
+        print(f"\n----- CONTEÚDO EXTRAÍDO DA IMAGEM: {file.filename} -----")
+        print(f"{text[:500]}...")  # Mostra apenas os primeiros 500 caracteres
+        print(f"----- FIM DO CONTEÚDO EXTRAÍDO ({len(text)} caracteres) -----\n")
+        return text
     
     # Para documentos Word
     elif content_type in ["application/msword", 
                         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]:
-        return extract_text_from_word_bytes(file_content)
+        text = extract_text_from_word_bytes(file_content)
+        print(f"\n----- CONTEÚDO EXTRAÍDO DO WORD: {file.filename} -----")
+        print(f"{text[:500]}...")  # Mostra apenas os primeiros 500 caracteres
+        print(f"----- FIM DO CONTEÚDO EXTRAÍDO ({len(text)} caracteres) -----\n")
+        return text
     
     # Tipo não suportado
     else:

@@ -8,11 +8,14 @@ import os
 import logging
 import json
 import io
+import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 from pydantic import BaseModel
 import datetime
 import tiktoken
+import stripe
+import firestore
 
 # Importar módulos Firebase
 try:
@@ -105,7 +108,7 @@ Seja objetivo, profissional e destaque os pontos mais importantes."""
         return "Você é um analista financeiro. Analise os documentos fornecidos e forneça um relatório detalhado."
 
 # Parâmetros do modelo
-MODELO = "gpt-4o"
+MODELO = "gpt-4o-mini"
 LIMITE_TOTAL_TOKENS = 128000
 LIMITE_COMPLETION = 16384
 LIMITE_PROMPT = LIMITE_TOTAL_TOKENS - LIMITE_COMPLETION
@@ -231,6 +234,22 @@ async def analyze_with_openai(combined_text: str) -> tuple:
 
         # Monta o prompt final
         user_prompt = f"{prompt_fixo}{combined_text}{prompt_final}"
+        
+        # Imprime o texto combinado final após todas as transformações
+        print("\n===== TEXTO COMBINADO FINAL APÓS TRANSFORMAÇÕES =====")
+        print(f"Tamanho total: {len(combined_text)} caracteres")
+        print("Primeiros 500 caracteres:")
+        print(combined_text[:500] + "..." if len(combined_text) > 500 else combined_text)
+        print("Últimos 500 caracteres:")
+        print("..." + combined_text[-500:] if len(combined_text) > 500 else combined_text)
+        print("============================================\n")
+        
+        # Imprime o prompt do sistema e uma parte do prompt do usuário para visualização
+        print("\n===== PROMPT DO SISTEMA =====")
+        print(system_prompt[:500] + "..." if len(system_prompt) > 500 else system_prompt)
+        print("\n===== PARTE DO PROMPT DO USUÁRIO =====")
+        print(user_prompt[:500] + "...")  # Mostrar apenas os primeiros 500 caracteres
+        print("=================================\n")
 
         logger.info("Enviando texto para análise da OpenAI...")
 
@@ -242,7 +261,7 @@ async def analyze_with_openai(combined_text: str) -> tuple:
                 {"role": "user", "content": user_prompt}
             ],
             max_tokens=LIMITE_COMPLETION,
-            temperature=0.3
+            temperature=0.4
         )
 
         # Extrai resultado
@@ -254,6 +273,26 @@ async def analyze_with_openai(combined_text: str) -> tuple:
         }
 
         logger.info(f"Análise concluída. Tokens utilizados: {token_usage}")
+        
+        # Verificar se a resposta está em formato markdown e destacar isso
+        print("\n===== VERIFICAÇÃO DE FORMATO MARKDOWN NA RESPOSTA =====")
+        markdown_indicators = [
+            "# ", "## ", "### ", "#### ", "##### ", "- ", "* ", "1. ", "> ", "```", "---",
+            "**", "_", "[", "](", "|", "+-"
+        ]
+        has_markdown = any(indicator in analysis for indicator in markdown_indicators)
+        print(f"A resposta contém formatação markdown: {'Sim' if has_markdown else 'Não'}")
+        
+        if has_markdown:
+            print("\n===== ELEMENTOS MARKDOWN DETECTADOS =====")
+            for indicator in markdown_indicators:
+                if indicator in analysis:
+                    print(f"- {indicator}")
+        
+        # Mostrar parte da análise recebida
+        print("\n===== PARTE DA ANÁLISE RECEBIDA =====")
+        print(analysis[:1000] + "..." if len(analysis) > 1000 else analysis)
+        print("====================================\n")
 
         return analysis, token_usage
 
@@ -284,6 +323,7 @@ async def analyze(
     
     combined_text = ""
     processed_files = []
+    registrato_files = []  # Armazenar os arquivos Registrato para processamento posterior
     cartao_cnpj_text = ""
     
     # Processar dados de planejamento, se fornecidos
@@ -291,6 +331,9 @@ async def analyze(
         try:
             planning_json = json.loads(planning_data)
             logger.info(f"Dados de planejamento recebidos: {planning_json}")
+            print("\n===== DADOS DE PLANEJAMENTO RECEBIDOS =====")
+            print(json.dumps(planning_json, indent=2, ensure_ascii=False))
+            print("===========================================\n")
             
             combined_text += "=== DADOS DE PLANEJAMENTO ===\n"
             
@@ -330,8 +373,12 @@ async def analyze(
             # Continuar mesmo com erro nos dados de planejamento
     
     # Primeira etapa: Extrair texto de todos os arquivos
+    print("\n===== INICIANDO PROCESSAMENTO DE ARQUIVOS =====")
+    print(f"Total de arquivos recebidos: {len(files)}")
+    
     for i, file in enumerate(files):
         logger.info(f"Processando arquivo {i+1}: {file.filename}, tipo: {file.content_type}")
+        print(f"\nProcessando arquivo {i+1}/{len(files)}: {file.filename} ({file.content_type})")
         
         # Verificar se o tipo de arquivo é suportado
         content_type = file.content_type
@@ -346,64 +393,135 @@ async def analyze(
                 detail=f"Arquivo {file.filename} não é suportado. Formatos aceitos: PDF, JPEG, PNG, DOC, DOCX."
             )
             
-        # Extrair texto do documento
-        try:
-            logger.info(f"Iniciando extração de texto para {file.filename}")
-            text = await extract_text_from_document(file)
+        # Identificar categoria do arquivo para uma melhor organização no texto
+        category = None
+        filename = file.filename.lower()
+        
+        print(f"Identificando categoria para arquivo: {file.filename}")
+        
+        # Verificar se é um cartão CNPJ para extrair o segmento
+        if 'cnpj' in filename or 'cartao' in filename:
+            category = 'Cartão CNPJ'
+            print(f"  -> Categoria identificada: {category} (contém 'cnpj' ou 'cartao')")
             
-            if not text or not text.strip():
-                logger.warning(f"Arquivo {file.filename} está vazio ou não pôde ser lido.")
+            # Extrair texto do documento para CNPJ
+            try:
+                logger.info(f"Iniciando extração de texto para {file.filename}")
+                text = await extract_text_from_document(file)
+                
+                if not text or not text.strip():
+                    logger.warning(f"Arquivo {file.filename} está vazio ou não pôde ser lido.")
+                    processed_files.append({
+                        "filename": file.filename,
+                        "status": "vazio",
+                        "text_length": 0
+                    })
+                    continue
+                
+                cartao_cnpj_text += text  # Armazenar texto do cartão CNPJ
+                combined_text += f"\n=== DOCUMENTO ({category}): {file.filename} ===\n"
+                combined_text += text + "\n\n"
+                
                 processed_files.append({
                     "filename": file.filename,
-                    "status": "vazio",
-                    "text_length": 0
+                    "status": "processado",
+                    "text_length": len(text),
+                    "category": category
                 })
-                continue
+                
+                logger.info(f"Arquivo {file.filename} processado com sucesso. Texto extraído: {len(text)} caracteres")
+                print(f"Arquivo processado com sucesso. Categoria identificada: {category}")
+                print(f"Total de caracteres extraídos: {len(text)}")
+            except Exception as e:
+                logger.error(f"Erro ao processar {file.filename}: {str(e)}")
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Erro ao processar {file.filename}: {str(e)}"
+                )
+        elif 'registrato' in filename:
+            # Para arquivos Registrato, armazenar para processamento posterior com DocLing
+            category = 'Registro'
+            print(f"  -> Categoria identificada: {category} (contém 'registrato')")
+            logger.info(f"Registrato identificado: {file.filename}. Será processado com DocLing posteriormente.")
             
-            # Identificar categoria do arquivo para uma melhor organização no texto
-            category = None
-            filename = file.filename.lower()
+            # Adicionar à lista de registratos para processar depois
+            registrato_files.append({
+                "file": file,
+                "filename": file.filename,
+                "index": i+1
+            })
             
-            # Verificar se é um cartão CNPJ para extrair o segmento
-            if 'cnpj' in filename or 'cartao' in filename:
-                category = 'Cartão CNPJ'
-                cartao_cnpj_text += text  # Armazenar texto do cartão CNPJ
-            elif 'imposto' in filename or 'irpf' in filename:
-                category = 'Imposto de Renda'
-            elif 'registro' in filename or 'contrato' in filename:
-                category = 'Registro'
-            elif 'fiscal' in filename:
-                category = 'Situação Fiscal'
-            elif 'faturamento' in filename:
-                if 'gerencial' in filename:
-                    category = 'Faturamento Gerencial'
-                else:
-                    category = 'Faturamento Fiscal'
-            elif 'spc' in filename or 'serasa' in filename:
-                category = 'SPC e Serasa'
-            elif 'demonstrativo' in filename or 'extrato' in filename:
-                category = 'Demonstrativo'
-            else:
-                category = 'Documento Adicional'
-            
+            # Adicionar um placeholder temporário
             combined_text += f"\n=== DOCUMENTO ({category}): {file.filename} ===\n"
-            combined_text += text + "\n\n"
+            combined_text += f"[REGISTRATO - SERÁ PROCESSADO COM DOCLING]\n\n"
             
             processed_files.append({
                 "filename": file.filename,
-                "status": "processado",
-                "text_length": len(text),
+                "status": "para_processamento",
                 "category": category
             })
-            
-            logger.info(f"Arquivo {file.filename} processado com sucesso. Texto extraído: {len(text)} caracteres")
-            
-        except Exception as e:
-            logger.error(f"Erro ao processar {file.filename}: {str(e)}")
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Erro ao processar {file.filename}: {str(e)}"
-            )
+        else:
+            # Para outros tipos de arquivos, processar normalmente
+            if 'imposto' in filename or 'irpf' in filename:
+                category = 'Imposto de Renda'
+                print(f"  -> Categoria identificada: {category} (contém 'imposto' ou 'irpf')")
+            elif 'registro' in filename or 'contrato' in filename:
+                category = 'Registro'
+                print(f"  -> Categoria identificada: {category} (contém 'registro' ou 'contrato')")
+            elif 'fiscal' in filename:
+                category = 'Situação Fiscal'
+                print(f"  -> Categoria identificada: {category} (contém 'fiscal')")
+            elif 'faturamento' in filename:
+                if 'gerencial' in filename:
+                    category = 'Faturamento Gerencial'
+                    print(f"  -> Categoria identificada: {category} (contém 'faturamento' e 'gerencial')")
+                else:
+                    category = 'Faturamento Fiscal'
+                    print(f"  -> Categoria identificada: {category} (contém 'faturamento')")
+            elif 'spc' in filename or 'serasa' in filename:
+                category = 'SPC e Serasa'
+                print(f"  -> Categoria identificada: {category} (contém 'spc' ou 'serasa')")
+            elif 'demonstrativo' in filename or 'extrato' in filename:
+                category = 'Demonstrativo'
+                print(f"  -> Categoria identificada: {category} (contém 'demonstrativo' ou 'extrato')")
+            else:
+                category = 'Documento Adicional'
+                print(f"  -> Categoria identificada: {category} (categoria padrão)")
+                
+            # Extrair texto do documento
+            try:
+                logger.info(f"Iniciando extração de texto para {file.filename}")
+                text = await extract_text_from_document(file)
+                
+                if not text or not text.strip():
+                    logger.warning(f"Arquivo {file.filename} está vazio ou não pôde ser lido.")
+                    processed_files.append({
+                        "filename": file.filename,
+                        "status": "vazio",
+                        "text_length": 0
+                    })
+                    continue
+                
+                combined_text += f"\n=== DOCUMENTO ({category}): {file.filename} ===\n"
+                combined_text += text + "\n\n"
+                
+                processed_files.append({
+                    "filename": file.filename,
+                    "status": "processado",
+                    "text_length": len(text),
+                    "category": category
+                })
+                
+                logger.info(f"Arquivo {file.filename} processado com sucesso. Texto extraído: {len(text)} caracteres")
+                print(f"Arquivo processado com sucesso. Categoria identificada: {category}")
+                print(f"Total de caracteres extraídos: {len(text)}")
+                
+            except Exception as e:
+                logger.error(f"Erro ao processar {file.filename}: {str(e)}")
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Erro ao processar {file.filename}: {str(e)}"
+                )
     
     if not combined_text.strip():
         raise HTTPException(
@@ -416,14 +534,137 @@ async def analyze(
     if cartao_cnpj_text:
         segment = extrair_segmento_do_cnae(cartao_cnpj_text)
         logger.info(f"Segmento extraído do CNAE: {segment}")
+        print(f"\n===== SEGMENTO EXTRAÍDO DO CNAE: {segment} =====")
         
         # Adicionar o segmento identificado aos dados de planejamento para o contexto da análise
         combined_text = combined_text.replace("=== DADOS DE PLANEJAMENTO ===\n", 
                                              f"=== DADOS DE PLANEJAMENTO ===\nSegmento da Empresa: {segment}\n")
     else:
         logger.warning("Cartão CNPJ não encontrado. Segmento não pôde ser extraído.")
+        print("\n===== CARTÃO CNPJ NÃO ENCONTRADO. SEGMENTO NÃO EXTRAÍDO =====")
     
     logger.info(f"Extração concluída. Total de texto: {len(combined_text)} caracteres")
+    print(f"\n===== EXTRAÇÃO CONCLUÍDA =====")
+    print(f"Total de texto combinado: {len(combined_text)} caracteres")
+    print(f"Total de arquivos processados: {len([f for f in processed_files if f['status'] == 'processado'])}")
+    print(f"Total de registratos para processar: {len(registrato_files)}")
+    print("===============================\n")
+    
+    # Processar os registratos com OpenAI Vision API
+    print("\n===== PROCESSANDO REGISTRATOS COM OPENAI VISION API =====")
+    
+    try:
+        # Importar nosso wrapper para processamento com Vision API
+        print("Importando wrapper para processamento com OpenAI Vision...")
+        from app.docling_wrapper import DocumentWrapper
+        
+        # Inicializar o wrapper
+        print("Inicializando DocumentWrapper...")
+        wrapper = DocumentWrapper()
+        if not wrapper.initialize():
+            print("⚠️ Não foi possível inicializar o DocumentWrapper. Pulando processamento de registratos.")
+            
+            # Adicionar um texto simples para todos os registratos que não serão processados
+            for registrato in registrato_files:
+                filename = registrato["filename"]
+                placeholder = f"\n=== DOCUMENTO (Registro): {filename} ===\n[REGISTRATO - SERÁ PROCESSADO COM DOCLING]\n\n"
+                replacement = f"\n=== DOCUMENTO (Registro): {filename} ===\n[ERRO: DocumentConverter não pôde ser inicializado]\n\n"
+                combined_text = combined_text.replace(placeholder, replacement)
+                
+            # Continuar com o restante do processamento sem processar os registratos
+        
+        print("✅ DocumentWrapper inicializado com sucesso")
+        
+        # Lista para armazenar os markdowns processados
+        registratos_processados = []
+        
+        # Processar cada arquivo registrato
+        for registrato in registrato_files:
+            file = registrato["file"]
+            filename = registrato["filename"]
+            
+            print(f"\nProcessando registrato: {filename}")
+            
+            try:
+                # Ler o conteúdo do arquivo diretamente
+                await file.seek(0)
+                file_content = await file.read()
+                
+                print(f"Arquivo lido em memória, tamanho: {len(file_content)} bytes")
+                
+                # Converter documento para imagem e processar com Vision API
+                print(f"Convertendo documento para imagem e processando com OpenAI Vision...")
+                processed_text = wrapper.convert_to_markdown(file_content, filename)
+                print('Texto processado obtido da API Vision')
+                
+                # Verificar se a conversão foi bem-sucedida
+                if processed_text.startswith("[ERRO"):
+                    print(f"⚠️ Erro no processamento da imagem: {processed_text}")
+                else:
+                    print(f"✅ Processamento com OpenAI Vision concluído: {len(processed_text)} caracteres")
+                    
+                    # Exibir parte do texto processado
+                    print("\n===== EXEMPLO DO TEXTO PROCESSADO COM VISION =====")
+                    print(processed_text[:500] + "..." if len(processed_text) > 500 else processed_text)
+                    print("============================================\n")
+                
+                # Armazenar o resultado processado
+                registratos_processados.append({
+                    "filename": filename,
+                    "markdown": processed_text
+                })
+                
+                # Substituir o placeholder pelo texto processado no texto combinado
+                placeholder = f"\n=== DOCUMENTO (Registro): {filename} ===\n[REGISTRATO - SERÁ PROCESSADO COM DOCLING]\n\n"
+                replacement = f"\n=== DOCUMENTO (Registro): {filename} ===\n{processed_text}\n\n"
+                combined_text = combined_text.replace(placeholder, replacement)
+                
+                print(f"✅ Registrato processado: {filename}")
+                
+            except Exception as e:
+                print(f"⚠️ Erro ao processar registrato {filename}: {str(e)}")
+                logger.error(f"Erro ao processar registrato {filename}: {str(e)}")
+                
+                # Adicionar mensagem de erro ao texto combinado
+                placeholder = f"\n=== DOCUMENTO (Registro): {filename} ===\n[REGISTRATO - SERÁ PROCESSADO COM DOCLING]\n\n"
+                replacement = f"\n=== DOCUMENTO (Registro): {filename} ===\n[ERRO AO PROCESSAR REGISTRATO: {str(e)}]\n\n"
+                combined_text = combined_text.replace(placeholder, replacement)
+        
+        print(f"\nTotal de {len(registratos_processados)} registratos processados")
+        
+        # Exibir o conteúdo completo dos registratos processados
+        if registratos_processados:
+            print("\n\n========================================================")
+            print("     CONTEÚDO COMPLETO DOS REGISTRATOS PROCESSADOS      ")
+            print("========================================================\n")
+            
+            for idx, reg in enumerate(registratos_processados):
+                print(f"[REGISTRATO {idx+1}: {reg['filename']}]")
+                print("TEXTO APÓS PROCESSAMENTO MARKDOWN:")
+                print("----------------------------------------")
+                print(reg['markdown'])
+                print("----------------------------------------\n")
+        
+    except ImportError as e:
+        print(f"⚠️ Erro ao importar docling: {str(e)}")
+        logger.error(f"Erro ao importar docling: {str(e)}")
+        
+        # Adicionar um texto simples para todos os registratos que não serão processados
+        for registrato in registrato_files:
+            filename = registrato["filename"]
+            placeholder = f"\n=== DOCUMENTO (Registro): {filename} ===\n[REGISTRATO - SERÁ PROCESSADO COM DOCLING]\n\n"
+            replacement = f"\n=== DOCUMENTO (Registro): {filename} ===\n[ERRO: Não foi possível importar docling: {str(e)}]\n\n"
+            combined_text = combined_text.replace(placeholder, replacement)
+    except Exception as e:
+        print(f"⚠️ Erro no processamento de registratos: {str(e)}")
+        logger.error(f"Erro no processamento de registratos: {str(e)}")
+        
+        # Adicionar um texto simples para todos os registratos que não serão processados
+        for registrato in registrato_files:
+            filename = registrato["filename"]
+            placeholder = f"\n=== DOCUMENTO (Registro): {filename} ===\n[REGISTRATO - SERÁ PROCESSADO COM DOCLING]\n\n"
+            replacement = f"\n=== DOCUMENTO (Registro): {filename} ===\n[ERRO: {str(e)}]\n\n"
+            combined_text = combined_text.replace(placeholder, replacement)
     
     # Atualizar os dados de planejamento para incluir o segmento extraído
     if planning_data:
@@ -438,7 +679,17 @@ async def analyze(
     
     # Segunda etapa: Enviar para OpenAI para análise
     try:
+        print("\n===== ENVIANDO PARA ANÁLISE DA OPENAI =====")
+        print(f"Modelo utilizado: {MODELO}")
+        print(f"Tamanho do texto a ser analisado: {len(combined_text)} caracteres")
+        
         analysis, token_usage = await analyze_with_openai(combined_text)
+        
+        print("\n===== ANÁLISE CONCLUÍDA =====")
+        print(f"Tokens do prompt: {token_usage['prompt_tokens']}")
+        print(f"Tokens da resposta: {token_usage['completion_tokens']}")
+        print(f"Total de tokens: {token_usage['total_tokens']}")
+        print("=============================\n")
         
         # Agrupar arquivos processados por categoria
         files_by_category = {}
