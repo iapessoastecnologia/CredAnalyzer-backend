@@ -60,6 +60,7 @@ class DocumentWrapper:
     def convert_to_markdown(self, file_content, filename):
         """
         Converte conteúdo do arquivo para imagem e processa com OpenAI Vision.
+        Para arquivos SCR, extrai dados estruturados das células específicas.
         
         Args:
             file_content: Bytes do arquivo
@@ -68,6 +69,44 @@ class DocumentWrapper:
         Returns:
             str: Conteúdo analisado (equivalente a markdown)
         """
+        if not self.initialize():
+            return f"[ERRO: DocumentWrapper não pôde ser inicializado]"
+        
+        try:
+            # Verificar se é um arquivo SCR
+            if 'registrato' in filename.lower() or 'scr' in filename.lower():
+                try:
+                    # Importar a função de processamento de SCR
+                    from app.utils import extract_scr_data_from_pdf
+                    
+                    # Processar o arquivo SCR
+                    scr_data = extract_scr_data_from_pdf(file_content, filename)
+                    
+                    # Formatar os dados para markdown estruturado
+                    formatted_text = f"## Dados SCR: {filename}\n\n"
+                    
+                    if "erro" in scr_data:
+                        formatted_text += f"**ERRO**: {scr_data['erro']}\n\n"
+                    
+                    formatted_text += "### Dívidas Extraídas\n\n"
+                    formatted_text += f"- **Dívida em dia**: R$ {scr_data['divida_em_dia']:.2f}\n"
+                    formatted_text += f"- **Dívida vencida**: R$ {scr_data['divida_vencida']:.2f}\n"
+                    formatted_text += f"- **Total de dívidas**: R$ {scr_data['total_dividas']:.2f}\n\n"
+                    
+                    # Adicionar informação sobre a extração direta
+                    formatted_text += "*Nota: Estes valores foram extraídos diretamente das células C4 (dívida em dia) e D4 (dívida vencida) do arquivo SCR.*\n\n"
+                    
+                    return formatted_text
+                    
+                except ImportError as e:
+                    logger.error(f"Erro ao importar módulo para processar SCR: {str(e)}")
+                    # Continuar com o processamento normal via Vision API
+                except Exception as e:
+                    logger.error(f"Erro ao processar SCR estruturado: {str(e)}")
+        except Exception as e:
+            logger.error(f"Erro ao processar SCR estruturado: {str(e)}")
+            return f"[ERRO: DocumentWrapper não pôde ser inicializado]"
+
         if not self.initialize():
             return f"[ERRO: DocumentWrapper não pôde ser inicializado]"
         

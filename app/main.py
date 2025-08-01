@@ -68,7 +68,7 @@ try:
 except Exception as e:
     logger.warning(f"Não foi possível inicializar o cliente OpenAI: {str(e)}")
 
-def load_prompt_from_file(prompt_file_path: str = "prompt.txt") -> str:
+def load_prompt_from_file(prompt_file_path: str = "prompt.txt", format: str = "txt") -> str:
     """Carrega o prompt do sistema a partir de um arquivo txt"""
     try:
         # Caminhos possíveis considerando a estrutura: app/ contém os arquivos Python
@@ -453,7 +453,7 @@ async def analyze(
             
             # Adicionar um placeholder temporário
             combined_text += f"\n=== DOCUMENTO ({category}): {file.filename} ===\n"
-            combined_text += f"[REGISTRATO - SERÁ PROCESSADO COM DOCLING]\n\n"
+            combined_text += f"[REGISTRATO - SERÁ PROCESSADO COM CAMELOT]\n\n"
             
             processed_files.append({
                 "filename": file.filename,
@@ -550,30 +550,11 @@ async def analyze(
     print(f"Total de registratos para processar: {len(registrato_files)}")
     print("===============================\n")
     
-    # Processar os registratos com OpenAI Vision API
-    print("\n===== PROCESSANDO REGISTRATOS COM OPENAI VISION API =====")
+    # Processar os registratos SCR com camelot
+    print("\n===== PROCESSANDO REGISTRATOS SCR COM CAMELOT =====")
     
     try:
-        # Importar nosso wrapper para processamento com Vision API
-        print("Importando wrapper para processamento com OpenAI Vision...")
-        from app.docling_wrapper import DocumentWrapper
-        
-        # Inicializar o wrapper
-        print("Inicializando DocumentWrapper...")
-        wrapper = DocumentWrapper()
-        if not wrapper.initialize():
-            print("⚠️ Não foi possível inicializar o DocumentWrapper. Pulando processamento de registratos.")
-            
-            # Adicionar um texto simples para todos os registratos que não serão processados
-            for registrato in registrato_files:
-                filename = registrato["filename"]
-                placeholder = f"\n=== DOCUMENTO (Registro): {filename} ===\n[REGISTRATO - SERÁ PROCESSADO COM DOCLING]\n\n"
-                replacement = f"\n=== DOCUMENTO (Registro): {filename} ===\n[ERRO: DocumentConverter não pôde ser inicializado]\n\n"
-                combined_text = combined_text.replace(placeholder, replacement)
-                
-            # Continuar com o restante do processamento sem processar os registratos
-        
-        print("✅ DocumentWrapper inicializado com sucesso")
+        print("✅ Sistema de processamento SCR inicializado")
         
         # Lista para armazenar os markdowns processados
         registratos_processados = []
@@ -592,21 +573,52 @@ async def analyze(
                 
                 print(f"Arquivo lido em memória, tamanho: {len(file_content)} bytes")
                 
-                # Converter documento para imagem e processar com Vision API
-                print(f"Convertendo documento para imagem e processando com OpenAI Vision...")
-                processed_text = wrapper.convert_to_markdown(file_content, filename)
-                print('Texto processado obtido da API Vision')
-                
-                # Verificar se a conversão foi bem-sucedida
-                if processed_text.startswith("[ERRO"):
-                    print(f"⚠️ Erro no processamento da imagem: {processed_text}")
-                else:
-                    print(f"✅ Processamento com OpenAI Vision concluído: {len(processed_text)} caracteres")
+                # Tentar primeiro o processamento estruturado de SCR
+                try:
+                    from app.utils import extract_scr_data_from_pdf
                     
-                    # Exibir parte do texto processado
-                    print("\n===== EXEMPLO DO TEXTO PROCESSADO COM VISION =====")
-                    print(processed_text[:500] + "..." if len(processed_text) > 500 else processed_text)
-                    print("============================================\n")
+                    print(f"Tentando processamento estruturado de SCR para: {filename}")
+                    scr_data = extract_scr_data_from_pdf(file_content, filename)
+                    
+                    # Formatar os dados para markdown estruturado
+                    processed_text = f"## Dados SCR: {filename}\n\n"
+                    
+                    if scr_data.get('erro'):
+                        processed_text += f"**ERRO**: {scr_data['erro']}\n\n"
+                except ImportError as e:
+                    print(f"⚠️ Erro ao importar função de processamento SCR: {str(e)}")
+                    processed_text = f"## Erro no Processamento SCR: {filename}\n\n**ERRO**: Não foi possível processar o arquivo SCR. Dependências não disponíveis.\n\n"
+                except Exception as e:
+                    print(f"⚠️ Erro no processamento SCR: {str(e)}")
+                    processed_text = f"## Erro no Processamento SCR: {filename}\n\n**ERRO**: {str(e)}\n\n"
+                else:
+                    processed_text += "### Informações da Empresa\n\n"
+                    processed_text += f"- **Nome**: {scr_data['empresa_nome']}\n"
+                    processed_text += f"- **CNPJ**: {scr_data['empresa_cnpj']}\n\n"
+                    
+                    processed_text += "### Dívidas Extraídas\n\n"
+                    processed_text += f"- **Dívida em dia**: R$ {scr_data['divida_em_dia']:.2f}\n"
+                    processed_text += f"- **Dívida vencida**: R$ {scr_data['divida_vencida']:.2f}\n"
+                    processed_text += f"- **Total de dívidas**: R$ {scr_data['total_dividas']:.2f}\n\n"
+                    
+                    # Adicionar informação sobre a planilha Excel
+                    if scr_data.get('planilha_gerada'):
+                        processed_text += f"### Arquivo Excel\n\n"
+                        processed_text += f"- **Planilha gerada**: {scr_data['planilha_gerada']}\n\n"
+                
+                # Adicionar informação sobre a extração direta
+                processed_text += "*Nota: Estes valores foram extraídos diretamente das posições [2,1] (dívida em dia) e [2,2] (dívida vencida) do arquivo SCR e convertidos para formato Excel (.xlsx).*\n\n"
+                
+                print(f"✅ Processamento estruturado de SCR concluído: {len(processed_text)} caracteres")
+                if not scr_data.get('erro'):
+                    print(f"Empresa: {scr_data['empresa_nome']} ({scr_data['empresa_cnpj']})")
+                    print(f"Dívida em dia: R$ {scr_data['divida_em_dia']:.2f}")
+                    print(f"Dívida vencida: R$ {scr_data['divida_vencida']:.2f}")
+                    print(f"Total: R$ {scr_data['total_dividas']:.2f}")
+                
+                # Mostrar informação sobre a planilha gerada
+                if scr_data.get('planilha_gerada'):
+                    print(f"📊 Planilha Excel: {scr_data['planilha_gerada']}")
                 
                 # Armazenar o resultado processado
                 registratos_processados.append({
@@ -615,7 +627,7 @@ async def analyze(
                 })
                 
                 # Substituir o placeholder pelo texto processado no texto combinado
-                placeholder = f"\n=== DOCUMENTO (Registro): {filename} ===\n[REGISTRATO - SERÁ PROCESSADO COM DOCLING]\n\n"
+                placeholder = f"\n=== DOCUMENTO (Registro): {filename} ===\n[REGISTRATO - SERÁ PROCESSADO COM CAMELOT]\n\n"
                 replacement = f"\n=== DOCUMENTO (Registro): {filename} ===\n{processed_text}\n\n"
                 combined_text = combined_text.replace(placeholder, replacement)
                 
@@ -626,7 +638,7 @@ async def analyze(
                 logger.error(f"Erro ao processar registrato {filename}: {str(e)}")
                 
                 # Adicionar mensagem de erro ao texto combinado
-                placeholder = f"\n=== DOCUMENTO (Registro): {filename} ===\n[REGISTRATO - SERÁ PROCESSADO COM DOCLING]\n\n"
+                placeholder = f"\n=== DOCUMENTO (Registro): {filename} ===\n[REGISTRATO - SERÁ PROCESSADO COM CAMELOT]\n\n"
                 replacement = f"\n=== DOCUMENTO (Registro): {filename} ===\n[ERRO AO PROCESSAR REGISTRATO: {str(e)}]\n\n"
                 combined_text = combined_text.replace(placeholder, replacement)
         
@@ -645,24 +657,14 @@ async def analyze(
                 print(reg['markdown'])
                 print("----------------------------------------\n")
         
-    except ImportError as e:
-        print(f"⚠️ Erro ao importar docling: {str(e)}")
-        logger.error(f"Erro ao importar docling: {str(e)}")
-        
-        # Adicionar um texto simples para todos os registratos que não serão processados
-        for registrato in registrato_files:
-            filename = registrato["filename"]
-            placeholder = f"\n=== DOCUMENTO (Registro): {filename} ===\n[REGISTRATO - SERÁ PROCESSADO COM DOCLING]\n\n"
-            replacement = f"\n=== DOCUMENTO (Registro): {filename} ===\n[ERRO: Não foi possível importar docling: {str(e)}]\n\n"
-            combined_text = combined_text.replace(placeholder, replacement)
     except Exception as e:
         print(f"⚠️ Erro no processamento de registratos: {str(e)}")
         logger.error(f"Erro no processamento de registratos: {str(e)}")
         
-        # Adicionar um texto simples para todos os registratos que não serão processados
+        # Adicionar mensagem de erro para todos os registratos
         for registrato in registrato_files:
             filename = registrato["filename"]
-            placeholder = f"\n=== DOCUMENTO (Registro): {filename} ===\n[REGISTRATO - SERÁ PROCESSADO COM DOCLING]\n\n"
+            placeholder = f"\n=== DOCUMENTO (Registro): {filename} ===\n[REGISTRATO - SERÁ PROCESSADO COM CAMELOT]\n\n"
             replacement = f"\n=== DOCUMENTO (Registro): {filename} ===\n[ERRO: {str(e)}]\n\n"
             combined_text = combined_text.replace(placeholder, replacement)
     

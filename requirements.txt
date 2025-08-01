@@ -13,5 +13,8 @@ numpy==1.26.1
 firebase-admin==6.2.0
 weasyprint==60.1
 stripe==7.0.0
-docling
 pdf2image==1.16.3
+camelot-py==0.10.1
+ghostscript==0.7
+pandas==2.1.3
+openpyxl==3.1.2
