@@ -303,9 +303,16 @@ async def analyze_with_openai(combined_text: str) -> tuple:
 @app.post("/analyze/")
 async def analyze(
     files: List[UploadFile] = File(...),
+    document_types: Optional[str] = Form(None),
     planning_data: Optional[str] = Form(None),
     user_id: Optional[str] = Form(None)
 ):
+    # Importar helper de log
+    try:
+        from app.log_helper import log_document_types
+        log_document_types(files, document_types)
+    except ImportError:
+        logger.warning("Não foi possível importar log_helper")
     logger.info(f"Recebido {len(files)} arquivos para análise")
     
     if not files:
@@ -376,6 +383,33 @@ async def analyze(
     print("\n===== INICIANDO PROCESSAMENTO DE ARQUIVOS =====")
     print(f"Total de arquivos recebidos: {len(files)}")
     
+    # Processar tipos de documento, se fornecidos
+    document_type_map = {}
+    if document_types:
+        try:
+            doc_types = json.loads(document_types)
+            # Formato esperado: {"file_index": "document_type"}
+            # Onde file_index é o índice do arquivo (string) e document_type é o tipo do documento
+            if isinstance(doc_types, dict):
+                document_type_map = doc_types
+                print(f"Tipos de documentos recebidos: {document_type_map}")
+            else:
+                print(f"AVISO: document_types não é um dicionário. Valor recebido: {doc_types}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Erro ao decodificar tipos de documentos: {str(e)}")
+            print(f"ERRO JSON: document_types não pôde ser decodificado. Valor recebido: {document_types}")
+            # Continuar mesmo com erro nos tipos de documentos
+    else:
+        # Análise forçada de nomes para SCR se não houver tipos de documentos
+        print("AVISO: Nenhum tipo de documento foi fornecido. Tentando detectar SCR pelo nome.")
+        scr_files_by_name = []
+        for i, file in enumerate(files):
+            filename = file.filename.lower()
+            if 'scr' in filename:
+                document_type_map[str(i)] = "scr"
+                print(f"  -> Detectado arquivo SCR pelo nome: {file.filename}")
+                scr_files_by_name.append(file.filename)
+    
     for i, file in enumerate(files):
         logger.info(f"Processando arquivo {i+1}: {file.filename}, tipo: {file.content_type}")
         print(f"\nProcessando arquivo {i+1}/{len(files)}: {file.filename} ({file.content_type})")
@@ -395,133 +429,114 @@ async def analyze(
             
         # Identificar categoria do arquivo para uma melhor organização no texto
         category = None
+        
+        # Verificar se é um arquivo SCR pelo nome (prioridade máxima)
         filename = file.filename.lower()
+        is_scr_file = 'scr' in filename
         
-        print(f"Identificando categoria para arquivo: {file.filename}")
+        print(f"Identificando categoria para arquivo: {file.filename}{' (possível SCR)' if is_scr_file else ''}")
         
-        # Verificar se é um cartão CNPJ para extrair o segmento
-        if 'cnpj' in filename or 'cartao' in filename:
-            category = 'Cartão CNPJ'
-            print(f"  -> Categoria identificada: {category} (contém 'cnpj' ou 'cartao')")
+        # Verificar se o tipo de documento foi informado pelo cliente
+        str_index = str(i)
+        
+        # Se for um arquivo SCR pelo nome mas não está no mapeamento, forçar tipo SCR
+        if is_scr_file and (str_index not in document_type_map):
+            print(f"  -> Forçando tipo SCR para arquivo {file.filename}")
+            document_type_map[str_index] = "scr"
             
-            # Extrair texto do documento para CNPJ
-            try:
-                logger.info(f"Iniciando extração de texto para {file.filename}")
-                text = await extract_text_from_document(file)
+        if str_index in document_type_map:
+            doc_type = document_type_map[str_index]
+            if doc_type == "cnpj":
+                category = 'Cartão CNPJ'
+                print(f"  -> Categoria identificada: {category} (informada pelo cliente)")
+            elif doc_type == "registrato" or doc_type == "scr":
+                category = 'Registro'
+                print(f"  -> Categoria identificada: {category} (informada pelo cliente)")
+                print(f"  -> REGISTRATO/SCR ENCONTRADO: {file.filename}")
+                logger.info(f"Registrato/SCR identificado: {file.filename}. Será processado com DocLing posteriormente.")
                 
-                if not text or not text.strip():
-                    logger.warning(f"Arquivo {file.filename} está vazio ou não pôde ser lido.")
-                    processed_files.append({
-                        "filename": file.filename,
-                        "status": "vazio",
-                        "text_length": 0
-                    })
-                    continue
+                # Adicionar à lista de registratos para processar depois
+                registrato_files.append({
+                    "file": file,
+                    "filename": file.filename,
+                    "index": i+1
+                })
                 
-                cartao_cnpj_text += text  # Armazenar texto do cartão CNPJ
+                # Adicionar um placeholder temporário
                 combined_text += f"\n=== DOCUMENTO ({category}): {file.filename} ===\n"
-                combined_text += text + "\n\n"
+                combined_text += f"[REGISTRATO - SERÁ PROCESSADO COM CAMELOT]\n\n"
                 
                 processed_files.append({
                     "filename": file.filename,
-                    "status": "processado",
-                    "text_length": len(text),
+                    "status": "para_processamento",
                     "category": category
                 })
-                
-                logger.info(f"Arquivo {file.filename} processado com sucesso. Texto extraído: {len(text)} caracteres")
-                print(f"Arquivo processado com sucesso. Categoria identificada: {category}")
-                print(f"Total de caracteres extraídos: {len(text)}")
-            except Exception as e:
-                logger.error(f"Erro ao processar {file.filename}: {str(e)}")
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Erro ao processar {file.filename}: {str(e)}"
-                )
-        elif 'registrato' in filename:
-            # Para arquivos Registrato, armazenar para processamento posterior com DocLing
-            category = 'Registro'
-            print(f"  -> Categoria identificada: {category} (contém 'registrato')")
-            logger.info(f"Registrato identificado: {file.filename}. Será processado com DocLing posteriormente.")
+                continue  # Pular para o próximo arquivo, pois este já foi tratado
+            elif doc_type == "imposto" or doc_type == "irpf":
+                category = 'Imposto de Renda'
+                print(f"  -> Categoria identificada: {category} (informada pelo cliente)")
+            elif doc_type == "fiscal":
+                category = 'Situação Fiscal'
+                print(f"  -> Categoria identificada: {category} (informada pelo cliente)")
+            elif doc_type == "faturamento_gerencial":
+                category = 'Faturamento Gerencial'
+                print(f"  -> Categoria identificada: {category} (informada pelo cliente)")
+            elif doc_type == "faturamento" or doc_type == "faturamento_fiscal":
+                category = 'Faturamento Fiscal'
+                print(f"  -> Categoria identificada: {category} (informada pelo cliente)")
+            elif doc_type == "spc" or doc_type == "serasa":
+                category = 'SPC e Serasa'
+                print(f"  -> Categoria identificada: {category} (informada pelo cliente)")
+            elif doc_type == "demonstrativo" or doc_type == "extrato":
+                category = 'Demonstrativo'
+                print(f"  -> Categoria identificada: {category} (informada pelo cliente)")
+            else:
+                # Usar o tipo fornecido como está
+                category = doc_type.capitalize()
+                print(f"  -> Categoria identificada: {category} (tipo informado pelo cliente)")
+        else:
+            # Se não houver tipo especificado, usar uma categoria genérica
+            category = 'Documento Adicional'
+            print(f"  -> Categoria identificada: {category} (tipo não especificado)")
+        
+        # Se chegou aqui, processar normalmente (não é um arquivo de Registrato já tratado)
+        try:
+            logger.info(f"Iniciando extração de texto para {file.filename}")
+            text = await extract_text_from_document(file)
             
-            # Adicionar à lista de registratos para processar depois
-            registrato_files.append({
-                "file": file,
-                "filename": file.filename,
-                "index": i+1
-            })
+            if not text or not text.strip():
+                logger.warning(f"Arquivo {file.filename} está vazio ou não pôde ser lido.")
+                processed_files.append({
+                    "filename": file.filename,
+                    "status": "vazio",
+                    "text_length": 0
+                })
+                continue
             
-            # Adicionar um placeholder temporário
+            # Se for um cartão CNPJ, armazenar o texto para extração de segmento
+            if category == 'Cartão CNPJ':
+                cartao_cnpj_text += text
+            
             combined_text += f"\n=== DOCUMENTO ({category}): {file.filename} ===\n"
-            combined_text += f"[REGISTRATO - SERÁ PROCESSADO COM CAMELOT]\n\n"
+            combined_text += text + "\n\n"
             
             processed_files.append({
                 "filename": file.filename,
-                "status": "para_processamento",
+                "status": "processado",
+                "text_length": len(text),
                 "category": category
             })
-        else:
-            # Para outros tipos de arquivos, processar normalmente
-            if 'imposto' in filename or 'irpf' in filename:
-                category = 'Imposto de Renda'
-                print(f"  -> Categoria identificada: {category} (contém 'imposto' ou 'irpf')")
-            elif 'registro' in filename or 'contrato' in filename:
-                category = 'Registro'
-                print(f"  -> Categoria identificada: {category} (contém 'registro' ou 'contrato')")
-            elif 'fiscal' in filename:
-                category = 'Situação Fiscal'
-                print(f"  -> Categoria identificada: {category} (contém 'fiscal')")
-            elif 'faturamento' in filename:
-                if 'gerencial' in filename:
-                    category = 'Faturamento Gerencial'
-                    print(f"  -> Categoria identificada: {category} (contém 'faturamento' e 'gerencial')")
-                else:
-                    category = 'Faturamento Fiscal'
-                    print(f"  -> Categoria identificada: {category} (contém 'faturamento')")
-            elif 'spc' in filename or 'serasa' in filename:
-                category = 'SPC e Serasa'
-                print(f"  -> Categoria identificada: {category} (contém 'spc' ou 'serasa')")
-            elif 'demonstrativo' in filename or 'extrato' in filename:
-                category = 'Demonstrativo'
-                print(f"  -> Categoria identificada: {category} (contém 'demonstrativo' ou 'extrato')")
-            else:
-                category = 'Documento Adicional'
-                print(f"  -> Categoria identificada: {category} (categoria padrão)")
-                
-            # Extrair texto do documento
-            try:
-                logger.info(f"Iniciando extração de texto para {file.filename}")
-                text = await extract_text_from_document(file)
-                
-                if not text or not text.strip():
-                    logger.warning(f"Arquivo {file.filename} está vazio ou não pôde ser lido.")
-                    processed_files.append({
-                        "filename": file.filename,
-                        "status": "vazio",
-                        "text_length": 0
-                    })
-                    continue
-                
-                combined_text += f"\n=== DOCUMENTO ({category}): {file.filename} ===\n"
-                combined_text += text + "\n\n"
-                
-                processed_files.append({
-                    "filename": file.filename,
-                    "status": "processado",
-                    "text_length": len(text),
-                    "category": category
-                })
-                
-                logger.info(f"Arquivo {file.filename} processado com sucesso. Texto extraído: {len(text)} caracteres")
-                print(f"Arquivo processado com sucesso. Categoria identificada: {category}")
-                print(f"Total de caracteres extraídos: {len(text)}")
-                
-            except Exception as e:
-                logger.error(f"Erro ao processar {file.filename}: {str(e)}")
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Erro ao processar {file.filename}: {str(e)}"
-                )
+            
+            logger.info(f"Arquivo {file.filename} processado com sucesso. Texto extraído: {len(text)} caracteres")
+            print(f"Arquivo processado com sucesso. Categoria identificada: {category}")
+            print(f"Total de caracteres extraídos: {len(text)}")
+            
+        except Exception as e:
+            logger.error(f"Erro ao processar {file.filename}: {str(e)}")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Erro ao processar {file.filename}: {str(e)}"
+            )
     
     if not combined_text.strip():
         raise HTTPException(
@@ -552,6 +567,11 @@ async def analyze(
     
     # Processar os registratos SCR com camelot
     print("\n===== PROCESSANDO REGISTRATOS SCR COM CAMELOT =====")
+    
+    # Exibir a quantidade e nomes dos arquivos para processamento
+    print(f"Arquivos para processamento SCR: {len(registrato_files)}")
+    for reg_file in registrato_files:
+        print(f"  -> {reg_file['filename']}")
     
     try:
         print("✅ Sistema de processamento SCR inicializado")
@@ -747,8 +767,16 @@ class ReportData(BaseModel):
 @app.post("/save_report/")
 async def save_report_endpoint(
     report_data: str = Form(...),
-    files: Optional[List[UploadFile]] = File(None)
+    files: Optional[List[UploadFile]] = File(None),
+    document_types: Optional[str] = Form(None)
 ):
+    # Importar helper de log
+    if files and document_types:
+        try:
+            from app.log_helper import log_document_types
+            log_document_types(files, document_types)
+        except ImportError:
+            logger.warning("Não foi possível importar log_helper")
     if not firebase_available:
         raise HTTPException(status_code=501, detail="Firebase não está disponível")
     
@@ -800,32 +828,62 @@ async def save_report_endpoint(
         # Processar arquivos, se houver
         analysis_files = {}
         
+        # Processar tipos de documento, se fornecidos
+        document_type_map = {}
+        if document_types:
+            try:
+                doc_types = json.loads(document_types)
+                # Formato esperado: {"file_index": "document_type"}
+                if isinstance(doc_types, dict):
+                    document_type_map = doc_types
+                    print(f"Tipos de documentos recebidos: {document_type_map}")
+            except json.JSONDecodeError as e:
+                logger.error(f"Erro ao decodificar tipos de documentos: {str(e)}")
+        
         if files:
-            for file in files:
+            for i, file in enumerate(files):
                 try:
-                    # Exemplo: Identificar tipo de arquivo pelo campo filename
-                    filename = file.filename.lower()
-                    
-                    # Mapeamento simplificado baseado no nome do arquivo
+                    # Identificar categoria pelo tipo de documento fornecido pelo cliente
+                    str_index = str(i)
                     category = None
-                    if 'imposto' in filename or 'irpf' in filename:
-                        category = 'incomeTax'
-                    elif 'registro' in filename or 'contrato' in filename:
-                        category = 'registration'
-                    elif 'fiscal' in filename:
-                        category = 'taxStatus'
-                    elif 'faturamento' in filename:
-                        if 'gerencial' in filename:
+                    
+                    # Verificar se é um arquivo SCR pelo nome (prioridade máxima)
+                    filename = file.filename.lower()
+                    is_scr_file = 'scr' in filename
+                    
+                    print(f"Salvando arquivo: {file.filename}{' (possível SCR)' if is_scr_file else ''}")
+                    
+                    # Se for um arquivo SCR pelo nome mas não está no mapeamento, forçar tipo SCR
+                    if is_scr_file and (str_index not in document_type_map):
+                        print(f"  -> Forçando tipo SCR para arquivo {file.filename}")
+                        document_type_map[str_index] = "scr"
+                    
+                    # Se tiver mapeamento de tipo de documento, usar ele
+                    if str_index in document_type_map:
+                        doc_type = document_type_map[str_index]
+                        # Mapeamento para categorias internas
+                        if doc_type == "imposto" or doc_type == "irpf":
+                            category = 'incomeTax'
+                        elif doc_type == "registro" or doc_type == "registrato" or doc_type == "scr" or doc_type == "contrato":
+                            category = 'registration'
+                        elif doc_type == "fiscal":
+                            category = 'taxStatus'
+                        elif doc_type == "faturamento_gerencial":
                             category = 'managementBilling'
-                        else:
+                        elif doc_type == "faturamento" or doc_type == "faturamento_fiscal":
                             category = 'taxBilling'
-                    elif 'spc' in filename or 'serasa' in filename:
-                        category = 'spcSerasa'
-                    elif 'demonstrativo' in filename or 'extrato' in filename:
-                        category = 'statement'
+                        elif doc_type == "spc" or doc_type == "serasa":
+                            category = 'spcSerasa'
+                        elif doc_type == "demonstrativo" or doc_type == "extrato":
+                            category = 'statement'
+                        elif doc_type == "cnpj":
+                            category = 'cnpj'
+                        else:
+                            category = doc_type
                     else:
-                        # Usar índice para arquivos não identificados
+                        # Se não houver tipo especificado, usar uma categoria genérica
                         category = f'document_{len(analysis_files)}'
+                        print(f"  -> Categoria genérica atribuída: {category} (tipo não especificado)")
                     
                     # Adicionar à lista de arquivos dessa categoria
                     if category not in analysis_files:
